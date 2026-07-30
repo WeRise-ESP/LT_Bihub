@@ -1,0 +1,15 @@
+.env
+venv/
+__pycache__/
+*.pyc
+exports/
+.streamlit/secrets.toml
+.DS_Store
+.claude/
+
+# Entorno virtual local (cualquiera de los dos nombres)
+.venv/
+
+# Credenciales: TODAS las variantes (copias, .bak, .local...)
+.streamlit/secrets*
+!.streamlit/secrets.toml.example

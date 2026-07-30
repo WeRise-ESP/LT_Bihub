@@ -1,0 +1,15 @@
+# Dependencias EXTRA de los scripts de consola (informe_lt*.py, dashboard.py,
+# contactos.py, deals.py, emails.py, analytics.py, client.py).
+#
+# `requirements.txt` es el manifiesto que instala Streamlit Cloud y solo cubre
+# la app web: no añadas nada aquí a ese archivo o alargas el despliegue sin
+# necesidad. Para trabajar con los scripts en local:
+#
+#   pip install -r requirements.txt -r requirements-cli.txt
+#
+-r requirements.txt
+
+rich>=13.0.0
+requests>=2.31.0
+hubspot-api-client>=8.0.0
+certifi>=2024.0.0

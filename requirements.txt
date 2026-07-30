@@ -1,0 +1,9 @@
+streamlit==1.57.0
+plotly>=5.22.0,<6.0.0
+pandas>=2.2.0,<3.0.0
+numpy>=1.26.0,<2.2.0
+pyarrow>=16.0.0,<18.0.0
+python-dotenv>=1.0.0
+openpyxl>=3.1.0
+matplotlib>=3.7.0,<3.10.0
+tzdata>=2024.1
