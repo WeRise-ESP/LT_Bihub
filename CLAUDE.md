@@ -121,6 +121,21 @@ dashboard. El tipo se decide **una sola vez**, en `fetch_negocios_cerrados`, con
 datos del negocio; el nombre del line item solo afina los que quedaron en
 "Otros", y nunca puede reclasificar algo *como* High Ticket.
 
+## Nombres de país: pasan por `normaliza_pais()`
+El país llega escrito de muchas formas según la fuente del dato (formulario en
+español, país de la IP en inglés, código ISO, hasta una ciudad). Sin unificar se
+partía en filas distintas: **"España" (1.254) y "Spain" (280) se contaban por
+separado**, y España no aparecía como el primer país que en realidad es.
+
+`normaliza_pais()` canoniza antes de agrupar (`Spain` / `es` / `Valencia` →
+`España`, `Viet Nam` → `Vietnam`, `Marokko` → `Morocco`…) y manda a "Sin datos"
+lo que no es un país (prefijos como `+1`, ids sueltos, `0: Object`). Bajó de 170
+a 145 valores distintos. Si aparece una variante nueva, añádela a
+`_PAIS_CANONICO`.
+
+⚠️ Los `informe_lt*.py` tienen su **propia** `resolve_pais` y NO normalizan
+todavía: si sacas un Excel, España y Spain saldrán separados.
+
 ## Qué hay dentro de "Otros"
 ~9 % de la facturación. Son productos reales de Low Ticket que no siguen la
 nomenclatura `pgm`: Barça Coach Academy, Football Scouting, Coaches Academy,

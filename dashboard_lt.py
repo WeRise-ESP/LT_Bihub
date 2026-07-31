@@ -477,6 +477,52 @@ def resolve_mercado(pais: str) -> str:
     return "Otro"
 
 
+# ── Normalización de nombres de país ──────────────────────────────────────────
+# El mismo país llega escrito de varias formas según de dónde salga el dato
+# (formulario en español, país de la IP en inglés, código ISO, incluso una
+# ciudad). Sin unificarlo se parte en filas distintas en TODAS las tablas: el
+# caso gordo era "España" (1.254) y "Spain" (280) contados por separado.
+_PAIS_CANONICO = {
+    # España y sus variantes, incluidas ciudades que llegan en el campo de país
+    "spain": "España", "españa": "España", "espana": "España",
+    "espanya": "España", "espagne": "España", "es": "España", "esp": "España",
+    "valencia": "España", "barcelona": "España", "madrid": "España",
+    "cataluña": "España", "catalunya": "España",
+    # Mismo país escrito de dos maneras
+    "united states-us": "United States", "estados unidos": "United States",
+    "usa": "United States", "us": "United States",
+    "viet nam": "Vietnam",
+    "slovakia (slovak republic)": "Slovakia",
+    "macedonia (fyrom)": "Macedonia", "north macedonia": "Macedonia",
+    "taiwan province of china": "Taiwan",
+    "cote d ivoire": "Cote D'Ivoire",
+    # Nombres en otro idioma
+    "marokko": "Morocco", "marruecos": "Morocco",
+    "suíça": "Switzerland", "suica": "Switzerland", "suiza": "Switzerland",
+    "francia": "France", "alemania": "Germany", "italia": "Italy",
+    "méxico": "Mexico", "brasil": "Brazil", "reino unido": "United Kingdom",
+}
+
+# Valores que no son un país: prefijos telefónicos, ids sueltos, restos de
+# formularios rotos. Van a "Sin datos" en vez de ensuciar las tablas.
+_PAIS_BASURA_RE = re.compile(r"^[\d\s+\-.:]+$")
+_PAIS_BASURA = {"0: object", "157: nl", "tatty654", "on", "as", "cd"}
+_RE_BANDERA = re.compile("[\U0001F1E6-\U0001F1FF]+")
+
+
+def normaliza_pais(v: str) -> str:
+    """Nombre de país canónico. 'Spain', 'es' y 'España' devuelven 'España'."""
+    v = _RE_BANDERA.sub("", (v or "")).strip(" .·-")
+    if not v or _PAIS_BASURA_RE.match(v):
+        return "Sin datos"
+    k = v.lower().strip()
+    if k in _PAIS_BASURA:
+        return "Sin datos"
+    if k in _PAIS_CANONICO:
+        return _PAIS_CANONICO[k]
+    return v.title()
+
+
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
 def resolve_pais(cp):
@@ -484,7 +530,10 @@ def resolve_pais(cp):
               "country", "billing_country"]:
         v = (cp.get(f) or "").strip()
         if v:
-            return v.title()
+            p = normaliza_pais(v)
+            # Si ese campo traía basura, seguimos probando con los siguientes
+            if p != "Sin datos":
+                return p
     return "Sin datos"
 
 
