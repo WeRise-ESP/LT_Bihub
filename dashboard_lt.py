@@ -667,6 +667,14 @@ CANAL_ORDEN = [
     "Alta manual", "Importación", "Test", "Otro formulario", "Sin identificar",
 ]
 
+# Canales que NO son captación real de Low Ticket y no cuentan en ninguna cifra:
+#   - Test: formularios de prueba del equipo, no son leads.
+#   - Formulario web High Ticket: aunque el contacto traiga un pgm de Low Ticket,
+#     entró por el embudo de High Ticket.
+# Se filtran en `fetch_data`, o sea en la capa de datos, para que las cinco
+# páginas cuenten lo mismo. Vacía el set si alguna vez se quieren ver.
+CANALES_EXCLUIDOS = {"Test", "Formulario web High Ticket"}
+
 # Se evalúan EN ORDEN: el primero que encaja gana. Importa, porque hay nombres
 # que cumplen varios patrones — p. ej. "FORM_LowTicket_ES_Landing" es una
 # landing, y "fcb_bihub_lowticket_leadadsgeneric_..." es Lead Ads pese a llevar
@@ -940,6 +948,11 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
 
     rows = []
     for cp in seen.values():
+        _canal = canal_entrada(cp.get("hs_object_source_label"),
+                               cp.get("hs_object_source_detail_1"))
+        # Fuera los formularios de prueba y los del embudo de High Ticket.
+        if _canal in CANALES_EXCLUIDOS:
+            continue
         fuente, origen = resolve_fuente(cp)
         fecha_str = _fecha_cuenta(cp.get("createdate"))
         _pais = resolve_pais(cp)
@@ -976,8 +989,7 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "fecha_fuente_reciente": _fecha_cuenta(cp.get("hs_latest_source_timestamp")),
             "record_source":    (cp.get("hs_object_source_label") or "").strip(),
             "record_d1":        (cp.get("hs_object_source_detail_1") or "").strip(),
-            "canal":            canal_entrada(cp.get("hs_object_source_label"),
-                                              cp.get("hs_object_source_detail_1")),
+            "canal":            _canal,
             "record_d2":        (cp.get("hs_object_source_detail_2") or "").strip(),
             "record_d3":        (cp.get("hs_object_source_detail_3") or "").strip(),
         })
@@ -2717,6 +2729,10 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
         f"si es un formulario, de su nombre — en HubSpot no hay una propiedad "
         f"curada de canal (`canal_de_contacto` está vacía). Respeta los filtros "
         f"del panel lateral."
+        + ("  \n🚫 **No se cuentan** los formularios de **prueba** ni los del "
+           "**formulario web de High Ticket**. Se excluyen en toda la "
+           "aplicación, así que estas cifras cuadran con las del resto de páginas."
+           if CANALES_EXCLUIDOS else "")
     )
 
     if dc.empty:

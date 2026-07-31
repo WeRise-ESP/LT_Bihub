@@ -152,6 +152,36 @@ landing 0,9 %, el resto testimonial. Pero la tasa de **activación** cuenta otra
 historia: checkout 64,7 %, chatbot 47,8 %, formulario web 46,4 %, Lead Ads
 43,4 % y landing solo 6 %.
 
+## 🚫 Canales excluidos
+`CANALES_EXCLUIDOS = {"Test", "Formulario web High Ticket"}`, filtrados en
+`fetch_data` (capa de datos, no en las páginas) para que las cinco vistas
+cuenten lo mismo:
+
+- **Test**: formularios de prueba del equipo (`TEST_*`), no son leads.
+- **Formulario web High Ticket**: aunque el contacto traiga un `pgm` de Low
+  Ticket, entró por el embudo de High Ticket.
+
+En julio de 2026 eran 5 y 46 contactos: 11.132 → 11.083.
+
+## ⚠️ La activación se desplomó a mitad de junio de 2026
+Dato de negocio, no bug del dashboard, pero conviene tenerlo presente al leer
+cualquier tasa de activación:
+
+| Semana de creación | Contactos | % Activados |
+|---|---:|---:|
+| 01/06/2026 | 2.464 | 96,6 % |
+| 08/06/2026 | 1.705 | 94,8 % |
+| 15/06/2026 | 2.257 | **2,9 %** |
+| 22/06/2026 | 2.207 | 1,3 % |
+| julio (media) | ~9.400 | ~1 % |
+| 27/07/2026 | 1.347 | 18,9 % |
+
+No es que los leads sean recientes: los de mediados de junio llevan seis semanas
+y siguen al 1 %. Todo apunta a que el workflow de **"Primera respuesta
+automatizada"** dejó de dispararse alrededor del **15 de junio de 2026**. Desde
+el dashboard solo se ve el efecto sobre `lt_lead_status`; para confirmarlo hay
+que mirar el workflow en HubSpot.
+
 ## ⚠️ La "IA" NO es un canal de entrada
 Es una **fuente de tráfico**: `hs_analytics_source = AI_REFERRALS` →
 "Referencias de la IA". Son personas que preguntan a ChatGPT y similares, llegan
