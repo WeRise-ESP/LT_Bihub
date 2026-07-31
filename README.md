@@ -105,7 +105,12 @@ Cuatro páginas (selector "📄 Página" en el panel lateral):
 | `CE_` | **Certificado** | *Certificate in Sports Cardiology* |
 | `P_` | **Diploma** | *Professional Diploma in Digital Marketing…* |
 | `C_` | **Curso** | *Course of Assessment Methods…* |
-| `EP_` `PG_` `M_` | **High Ticket** | Se venden también por este canal; se marcan `(HT)` y se muestran aparte |
+| `EP_` `PG_` `M_` | **High Ticket** | Se venden también por este canal, pero **no cuentan** en este dashboard |
+
+> 🚫 **High Ticket no entra.** Los másters, postgrados y programas ejecutivos se
+> excluyen de todas las cifras de venta, aunque se compren por el mismo canal de
+> WooCommerce. El filtro está en la capa de datos (constante `EXCLUIR_HIGH_TICKET`),
+> así que todas las páginas cuadran entre sí.
 
 ### ⚠️ Las ventas vienen de dos pipelines
 

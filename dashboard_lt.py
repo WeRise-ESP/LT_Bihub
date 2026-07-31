@@ -565,6 +565,21 @@ def tipo_producto(codigo: str, *textos) -> str:
     return "Otros"
 
 
+TIPOS_HIGH_TICKET = set(TIPO_PROGRAMA_HT.values())
+
+# Este es el dashboard de Low Ticket: los productos de High Ticket (másters,
+# postgrados y programas ejecutivos) que se venden por el mismo canal NO cuentan
+# en ninguna cifra de venta. Se excluyen en la capa de datos, no en las páginas,
+# para que todas las vistas den lo mismo.
+# Ponlo a False si alguna vez se quiere ver el canal completo.
+EXCLUIR_HIGH_TICKET = True
+
+
+def es_high_ticket(codigo: str, *textos) -> bool:
+    """¿La venta es de un producto de High Ticket (EP_ / PG_ / M_)?"""
+    return tipo_producto(codigo, *textos) in TIPOS_HIGH_TICKET
+
+
 def limpia_nombre_producto(nombre: str, dealname: str, codigo: str) -> str:
     """
     Nombre presentable del producto. Los line items vienen como
@@ -966,6 +981,11 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 # no le toca para no duplicar pedidos durante el solape.
                 if _fuera_del_corte(pipeline_id, fecha_cierre):
                     continue
+                # Fuera los productos de High Ticket vendidos por este canal.
+                _cod = codigo_producto(p.get("codigo_del_producto"), p.get("dealname"))
+                if EXCLUIR_HIGH_TICKET and es_high_ticket(
+                        _cod, p.get("dealname"), p.get("curso")):
+                    continue
                 try:
                     _imp = float(p.get("amount") or 0)
                 except Exception:
@@ -978,7 +998,12 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                     "importe":      _imp,
                     "curso":        (p.get("curso") or "").strip(),
                     "dealname":     (p.get("dealname") or "").strip(),
-                    "cod_producto": (p.get("codigo_del_producto") or "").strip(),
+                    "cod_producto": _cod,
+                    # El tipo se decide AQUÍ y una sola vez, con datos del
+                    # negocio, para que todas las páginas cuenten lo mismo y
+                    # para que coincida con el filtro de High Ticket de arriba.
+                    "tipo_curso":   tipo_producto(_cod, p.get("dealname"),
+                                                  p.get("curso")),
                 }
 
             pg = data.get("paging", {})
@@ -1093,6 +1118,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 "curso":         info.get("curso", ""),
                 "dealname":      info.get("dealname", ""),
                 "cod_producto":  info.get("cod_producto", ""),
+                "tipo_curso":    info.get("tipo_curso", "Otros"),
                 "importe":       info.get("importe", 0.0),
                 "contacto_creado": data["contacto_creado"],
                 "fecha_cierre":  info["fecha_cierre"],
@@ -1145,6 +1171,10 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
                 fecha_c = _fecha_cuenta(p.get("closedate"))
                 if _fuera_del_corte(pipeline_id, fecha_c):
                     continue
+                _cod = codigo_producto(p.get("codigo_del_producto"), p.get("dealname"))
+                if EXCLUIR_HIGH_TICKET and es_high_ticket(
+                        _cod, p.get("dealname"), p.get("curso")):
+                    continue
                 deal_map[d["id"]] = {
                     "fecha_cierre":    fecha_c,
                     "mes":             fecha_c[:7] if fecha_c else "",
@@ -1153,8 +1183,7 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
                     # El código del producto vive en el propio negocio (99 % en
                     # WooCommerce); es mucho mejor fuente que el `pgm` del
                     # contacto, que solo está relleno en ~40 % de los pedidos.
-                    "deal_codigo":      codigo_producto(p.get("codigo_del_producto"),
-                                                        p.get("dealname")),
+                    "deal_codigo":      _cod,
                 }
 
             pg = data.get("paging", {})
@@ -1331,11 +1360,23 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
     for _, r in g.iterrows():
         info = li.get(str(r["deal_id"]), {})
         nombre_li = info.get("nombre", "")
-        sku       = info.get("sku", "")
-        # El código puede venir del propio negocio, del sku o del texto del
-        # line item; y como último recurso, del `pgm` del contacto.
-        codigo = codigo_producto(r.get("cod_producto"), sku, nombre_li, r.get("pgm"))
-        tipo   = tipo_producto(codigo, nombre_li, r.get("dealname"), r.get("curso"))
+        # Código: el del negocio manda; si no lo hay, el que venga incrustado en
+        # el nombre del producto ("Certificate in X [CE_0009] - English").
+        # NO se usa el `hs_sku` del line item: hay registros con el SKU obsoleto
+        # (EP_009_EN etiquetando un "Certificate in...", o PG_003_EN en extras
+        # como "FAMILY ACCESS - ALUMNI"), y colaba ventas como High Ticket.
+        codigo = codigo_producto(r.get("cod_producto"), nombre_li)
+        # El tipo ya viene decidido desde fetch_negocios_cerrados (con datos del
+        # negocio), que es lo que garantiza que todas las páginas cuadren.
+        # El nombre del line item solo sirve para AFINAR los que quedaron en
+        # "Otros" — típicamente pedidos de Woo sin `codigo_del_producto`, cuyo
+        # dealname es solo el número de pedido. Nunca puede reclasificar algo
+        # COMO High Ticket: esa decisión ya se tomó y filtró antes.
+        tipo = r.get("tipo_curso") or "Otros"
+        if tipo == "Otros" and nombre_li:
+            _afinado = tipo_producto("", nombre_li)
+            if _afinado not in TIPOS_HIGH_TICKET and _afinado != "Otros":
+                tipo = _afinado
         filas.append({
             "deal_id":      r["deal_id"],
             "producto":     limpia_nombre_producto(nombre_li, r.get("dealname"), codigo),
@@ -2559,6 +2600,11 @@ def _render_ventas_page(dv, periodo_txt, fi, ff):
         f"(`codigo_del_producto` y nombre del producto), no desde el `pgm` del "
         f"contacto — por eso cubre casi todas las ventas. Respeta los filtros del "
         f"panel lateral."
+        + ("  \n🚫 **No se cuentan los productos de High Ticket** (másters, "
+           "postgrados y programas ejecutivos) aunque se vendan por este mismo "
+           "canal. Se excluyen en toda la aplicación, así que estas cifras "
+           "cuadran con las del Dashboard general."
+           if EXCLUIR_HIGH_TICKET else "")
     )
 
     if dv.empty:
@@ -2637,15 +2683,14 @@ def _render_ventas_page(dv, periodo_txt, fi, ff):
                      "% Facturación": "{:.1f}%", "% Ventas": "{:.1f}%"}),
             use_container_width=True, hide_index=True,
         )
-        if "Máster (HT)" in _tipos_pres or "Postgrado (HT)" in _tipos_pres \
-                or "Executive Programme (HT)" in _tipos_pres:
-            _ht = res[res["tipo_curso"].str.contains("HT", regex=False)]
+        if "Otros" in _tipos_pres:
+            _o = res[res["tipo_curso"] == "Otros"]
             st.caption(
-                f"ℹ️ Los tipos marcados **(HT)** son productos de High Ticket "
-                f"vendidos por el mismo canal: {int(_ht['Ventas'].sum())} ventas y "
-                f"{_eur(float(_ht['Facturacion'].sum()))} "
-                f"({_ht['% Facturación'].sum():.1f}% de la facturación). No son Low "
-                f"Ticket, pero pasan por aquí — por eso se muestran aparte."
+                f"ℹ️ **Otros** ({int(_o['Ventas'].sum())} ventas, "
+                f"{_eur(float(_o['Facturacion'].iloc[0]))}) son productos que no "
+                f"siguen la nomenclatura `pgm`: Barça Coach Academy, Football "
+                f"Scouting, Coaches Academy, Business Intelligence in Sports y "
+                f"algún extra suelto. Míralos en el ranking de abajo."
             )
 
     # Evolución mensual, si el período abarca más de un mes

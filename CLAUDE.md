@@ -96,11 +96,39 @@ Con el arreglo (aceptar cualquier 2xx) la cobertura de país y origen en los
 negocios pasó del **22 % al 99 %**. `bihub-rst-dashboard` tiene el mismo código
 y por tanto el mismo bug: **conviene replicar el arreglo allá**.
 
-## ⚠️ Ventas de High Ticket por el canal de Low Ticket
-Por WooCommerce se venden también productos `EP_` / `PG_` / `M_`. No son
-despreciables: en junio de 2026 fueron el **30 % de la facturación** (Postgrado
-14,5 % + Máster 11,8 % + Executive Programme 3,7 %). La página de Ventas los
-etiqueta como `(HT)` y los muestra aparte para que no se mezclen con Low Ticket.
+## 🚫 High Ticket NO cuenta (decisión de negocio)
+Por WooCommerce se venden también productos `EP_` / `PG_` / `M_` (programas
+ejecutivos, postgrados y másters). **No entran en ninguna cifra de este
+dashboard**: se filtran en la capa de datos (`fetch_negocios_cerrados` y
+`fetch_ganados_por_programa`), no en las páginas, para que todas las vistas den
+lo mismo. La constante es `EXCLUIR_HIGH_TICKET = True`; ponla a `False` si
+alguna vez hace falta ver el canal completo.
+
+Pesan lo suyo: en junio de 2026 eran 10 ventas y **69.581 €**, un 29 % de la
+facturación que se veía antes del filtro.
+
+## ⚠️ El `hs_sku` de los line items no es de fiar
+Al clasificar productos, **usa `codigo_del_producto` del negocio y el NOMBRE del
+producto — nunca el `hs_sku` del line item**. Hay registros con el SKU obsoleto:
+
+- `EP_009_EN` etiquetando *"Certificate in Football Tactical Analyst"*
+- `M_001_EN` sobre *"Professional Diploma in Sports Marketing and Sponsorship"*
+- `PG_003_EN` en extras que ni siquiera son cursos (*"FAMILY ACCESS - ALUMNI"*,
+  *"OFFICIAL GRADUATION CEREMONY"*)
+
+Fiarse del SKU colaba ventas de Low Ticket como High Ticket y las eliminaba del
+dashboard. El tipo se decide **una sola vez**, en `fetch_negocios_cerrados`, con
+datos del negocio; el nombre del line item solo afina los que quedaron en
+"Otros", y nunca puede reclasificar algo *como* High Ticket.
+
+## Qué hay dentro de "Otros"
+~9 % de la facturación. Son productos reales de Low Ticket que no siguen la
+nomenclatura `pgm`: Barça Coach Academy, Football Scouting, Coaches Academy,
+Digital Capacity Management, Business Intelligence in Sports, Introduction to
+Sports Analytics… Ahí dentro hay además **63 ventas / 21.657 € (ene–jul 2026)
+que no son cursos**, sino extras de alumni (`PREMIUM EXPERIENCE`,
+`FAMILY ACCESS`, `OFFICIAL GRADUATION CEREMONY`). Hoy **sí cuentan**; si se
+decide que no, hay que filtrarlos por nombre en `fetch_negocios_cerrados`.
 
 ## Otras notas
 - **Batches de HubSpot: máximo 100 inputs** por llamada (400 con más).
