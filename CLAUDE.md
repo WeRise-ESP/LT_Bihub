@@ -121,6 +121,46 @@ dashboard. El tipo se decide **una sola vez**, en `fetch_negocios_cerrados`, con
 datos del negocio; el nombre del line item solo afina los que quedaron en
 "Otros", y nunca puede reclasificar algo *como* High Ticket.
 
+## 📥 Canal de entrada del contacto
+**No hay propiedad curada.** `canal_de_contacto` existe pero está **vacía en el
+100 %** de los contactos Low Ticket, y sus opciones (Email/Teléfono/Linkedin)
+no tienen nada que ver. El canal se deduce en `canal_entrada()` a partir de:
+
+1. `hs_object_source_label` — cómo se creó el registro (`FORM`, `CONVERSATIONS`,
+   `INTEGRATION`, `CRM_UI`, `IMPORT`).
+2. Si es `FORM`, el **nombre del formulario** en `hs_object_source_detail_1`.
+
+Nomenclatura real de los formularios (los patrones se evalúan EN ORDEN, importa):
+
+| Nombre del formulario | Canal |
+|---|---|
+| `Form_P_0023_ES_05/26`, `FormLargo_…`, `fcb_bihub_…_leadads…_fb/ig_…` | Facebook Lead Ads |
+| `FORM_LowTicket_ES` / `_EN` / `_CA` | Formulario web Low Ticket |
+| `FORM_LowTicket_ES_Landing`, `Barca Landing catalogo ES` | Landing |
+| `FORM LOWTICKET - BANNER WEB` | Banner web |
+| `FORM_HighTicket_*` | Formulario web High Ticket |
+| `Formulario_Helpdesk_*` | Helpdesk |
+| `TEST_*` | Test |
+| `WooCommerce by MakeWebBetter` | Checkout / tienda |
+
+⚠️ Ojo con el orden: `fcb_bihub_lowticket_leadadsgeneric_…` lleva "lowticket"
+dentro pero es Lead Ads, y `FORM_LowTicket_ES_Landing` es una landing. Por eso
+Lead Ads y Landing se comprueban **antes** que el formulario web.
+
+Reparto real (junio 2026): Facebook Lead Ads **89 %**, formulario web 9,1 %,
+landing 0,9 %, el resto testimonial. Pero la tasa de **activación** cuenta otra
+historia: checkout 64,7 %, chatbot 47,8 %, formulario web 46,4 %, Lead Ads
+43,4 % y landing solo 6 %.
+
+## ⚠️ La "IA" NO es un canal de entrada
+Es una **fuente de tráfico**: `hs_analytics_source = AI_REFERRALS` →
+"Referencias de la IA". Son personas que preguntan a ChatGPT y similares, llegan
+a la web y entran por el formulario normal. Si buscas leads de IA, mira la
+dimensión de **origen**, no la de canal. En junio de 2026 fueron 40 contactos.
+
+Tampoco existe un canal "chatbot" como formulario: los del chat entran con
+`hs_object_source_label = CONVERSATIONS` (23 en junio).
+
 ## Nombres de país: pasan por `normaliza_pais()`
 El país llega escrito de muchas formas según la fuente del dato (formulario en
 español, país de la IP en inglés, código ISO, hasta una ciudad). Sin unificar se

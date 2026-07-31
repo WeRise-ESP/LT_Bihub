@@ -76,13 +76,28 @@ git push origin main          # 2) publica → Streamlit Cloud redespliega (~1-3
 
 ## 🧭 Estructura de la app
 
-Cuatro páginas (selector "📄 Página" en el panel lateral):
+Cinco páginas (selector "📄 Página" en el panel lateral):
 - **📊 Dashboard general** — KPIs, embudo Low Ticket y negocios de venta.
 - **💶 Ventas y Facturación** — resumen ejecutivo (ventas, facturación, ticket medio
   y % de facturación por tipo de curso), matrículas y facturación por origen y por
   país, cruce origen × país × tipo, y ranking de programas.
+- **📥 Contactos y Canales** — la misma estructura pero de captación: contactos y
+  tasa de activación por **canal de entrada** (Facebook Lead Ads, formulario web,
+  landing, banner, chatbot…), por país, cruce canal × país × tipo y ranking de
+  programas por contactos captados.
 - **🎓 Conversión por Programa** — conversión agrupada por código `pgm`.
 - **🧲 Análisis de Leads** — origen, fuente y campaña por programa.
+
+### Canal de entrada vs. origen de tráfico
+
+Son dos cosas distintas y conviene no confundirlas:
+
+- **Canal de entrada** = por dónde rellenó el formulario (Lead Ads, web, landing,
+  banner, chatbot). Se deduce del nombre del formulario, porque en HubSpot no hay
+  una propiedad curada de canal.
+- **Origen de tráfico** = de dónde venía (búsqueda de pago, orgánica, redes,
+  **Referencias de la IA**…). Ahí es donde se ven los leads que llegan desde
+  ChatGPT y similares: **la IA es un origen, no un canal**.
 
 ---
 

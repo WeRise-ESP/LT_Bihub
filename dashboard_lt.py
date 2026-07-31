@@ -304,7 +304,7 @@ LEAD_COLS = [
     "camp_original", "camp_reciente",
     "orig_d1", "orig_d2", "rec_d1", "rec_d2",
     "fecha_fuente_reciente",
-    "record_source", "record_d1", "record_d2", "record_d3",
+    "record_source", "record_d1", "record_d2", "record_d3", "canal",
 ]
 
 # Etiquetas EXACTAS de HubSpot (en español) para la Fuente original de tráfico
@@ -652,6 +652,67 @@ def limpia_nombre_producto(nombre: str, dealname: str, codigo: str) -> str:
     return n
 
 
+# ── Canal de entrada del contacto ─────────────────────────────────────────────
+# Por dónde entró el lead. NO existe una propiedad curada para esto
+# (`canal_de_contacto` está vacía en el 100 % de los contactos Low Ticket), así
+# que se deduce de cómo se creó el registro (`hs_object_source_label`) y, cuando
+# es un formulario, de su nombre (`hs_object_source_detail_1`).
+#
+# Ojo: la **IA no es un canal de entrada**, es una fuente de tráfico
+# (`hs_analytics_source = AI_REFERRALS` → "Referencias de la IA"), así que se ve
+# en la dimensión de origen, no aquí.
+CANAL_ORDEN = [
+    "Facebook Lead Ads", "Formulario web Low Ticket", "Landing", "Banner web",
+    "Chatbot", "Formulario web High Ticket", "Helpdesk", "Checkout / tienda",
+    "Alta manual", "Importación", "Test", "Otro formulario", "Sin identificar",
+]
+
+# Se evalúan EN ORDEN: el primero que encaja gana. Importa, porque hay nombres
+# que cumplen varios patrones — p. ej. "FORM_LowTicket_ES_Landing" es una
+# landing, y "fcb_bihub_lowticket_leadadsgeneric_..." es Lead Ads pese a llevar
+# "lowticket" dentro.
+_PATRONES_CANAL = [
+    (re.compile(r"banner", re.I),                          "Banner web"),
+    (re.compile(r"helpdesk", re.I),                        "Helpdesk"),
+    (re.compile(r"^\s*test[_\s-]", re.I),                  "Test"),
+    (re.compile(r"lead\s*ads|leadads|fb/ig", re.I),        "Facebook Lead Ads"),
+    # Formularios de campaña: Form_P_0023_ES_05/26, FormLargo_CE_0044_EN_07/26
+    (re.compile(r"^form(largo)?_(?:CE|EP|PG|P|C|M)_\d+", re.I), "Facebook Lead Ads"),
+    (re.compile(r"landing", re.I),                         "Landing"),
+    (re.compile(r"low\s*ticket|lowticket", re.I),          "Formulario web Low Ticket"),
+    (re.compile(r"high\s*ticket|highticket", re.I),        "Formulario web High Ticket"),
+    (re.compile(r"woocommerce|checkout|carrito|cart", re.I), "Checkout / tienda"),
+]
+
+# Cómo se creó el registro, cuando no viene de un formulario.
+_CANAL_POR_ORIGEN = {
+    "CONVERSATIONS": "Chatbot",
+    "CRM_UI":        "Alta manual",
+    "IMPORT":        "Importación",
+    "INTEGRATION":   "Checkout / tienda",
+}
+
+
+def canal_entrada(record_source: str, detalle: str) -> str:
+    """Canal por el que entró el contacto (formulario web, landing, chatbot…)."""
+    origen = (record_source or "").strip().upper()
+    det = (detalle or "").strip()
+
+    # Los formularios se clasifican por su nombre; el resto, por el origen.
+    if origen and origen != "FORM":
+        if origen in _CANAL_POR_ORIGEN:
+            return _CANAL_POR_ORIGEN[origen]
+        # Un origen desconocido pero con nombre de formulario aún puede encajar
+    if det:
+        for rx, canal in _PATRONES_CANAL:
+            if rx.search(det):
+                return canal
+        return "Otro formulario"
+    if origen == "FORM":
+        return "Otro formulario"
+    return "Sin identificar"
+
+
 def resolve_fuente(cp):
     raw_o = (cp.get("hs_analytics_source") or "").strip()
     raw_r = (cp.get("hs_latest_source") or "").strip()
@@ -915,6 +976,8 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "fecha_fuente_reciente": _fecha_cuenta(cp.get("hs_latest_source_timestamp")),
             "record_source":    (cp.get("hs_object_source_label") or "").strip(),
             "record_d1":        (cp.get("hs_object_source_detail_1") or "").strip(),
+            "canal":            canal_entrada(cp.get("hs_object_source_label"),
+                                              cp.get("hs_object_source_detail_1")),
             "record_d2":        (cp.get("hs_object_source_detail_2") or "").strip(),
             "record_d3":        (cp.get("hs_object_source_detail_3") or "").strip(),
         })
@@ -1795,7 +1858,8 @@ def main():
         pagina = st.radio(
             "Navegación",
             ["📊 Dashboard general", "💶 Ventas y Facturación",
-             "🎓 Conversión por Programa", "🧲 Análisis de Leads"],
+             "📥 Contactos y Canales", "🎓 Conversión por Programa",
+             "🧲 Análisis de Leads"],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -1964,6 +2028,10 @@ def main():
             if filtro_pais:
                 df_ventas = df_ventas[df_ventas["pais"].isin(filtro_pais)]
         _render_ventas_page(df_ventas, periodo_txt, fi, ff)
+        return
+
+    if pagina == "📥 Contactos y Canales":
+        _render_contactos_page(df, periodo_txt, fi, ff)
         return
 
     if pagina == "🎓 Conversión por Programa":
@@ -2636,6 +2704,401 @@ def main():
     st.markdown(
         f"<br><div style='text-align:center;color:{BARCA['ink40']};font-size:12px'>"
         f"{ACCOUNT_NAME} · Contactos Low Ticket por programa (pgm) · Datos actualizados automáticamente cada 5 min</div>",
+        unsafe_allow_html=True
+    )
+
+
+def _render_contactos_page(dc, periodo_txt, fi, ff):
+    """Página de Contactos y Canales: por dónde entran los leads."""
+    st.markdown("## 📥 Contactos y Canales de entrada")
+    st.caption(
+        f"📅 {periodo_txt} · Una fila por **contacto creado en el período** "
+        f"(`createdate`). El **canal** se deduce de cómo se creó el registro y, "
+        f"si es un formulario, de su nombre — en HubSpot no hay una propiedad "
+        f"curada de canal (`canal_de_contacto` está vacía). Respeta los filtros "
+        f"del panel lateral."
+    )
+
+    if dc.empty:
+        st.info("No hay contactos en el período y filtros seleccionados.")
+        return
+
+    _canales_pres = [c for c in CANAL_ORDEN if c in set(dc["canal"])]
+    _COLOR_CANAL = {
+        "Facebook Lead Ads":           BARCA["blue"],
+        "Formulario web Low Ticket":   BARCA["gold"],
+        "Landing":                     BARCA["garnet"],
+        "Banner web":                  BARCA["yellow"],
+        "Chatbot":                     BARCA["blue_deep"],
+        "Formulario web High Ticket":  BARCA["garnet_deep"],
+        "Helpdesk":                    BARCA["ink60"],
+        "Checkout / tienda":           BARCA["blue_ink"],
+        "Alta manual":                 BARCA["ink40"],
+        "Importación":                 BARCA["ink20"],
+        "Test":                        BARCA["line2"],
+        "Otro formulario":             BARCA["ink40"],
+        "Sin identificar":             BARCA["line2"],
+    }
+    _ORDEN_TIPO = list(TIPO_PROGRAMA.values()) + ["Otro"]
+    _tipos_pres = [t for t in _ORDEN_TIPO if t in set(dc["tipo_programa"])]
+    _COLOR_TIPO = {
+        "Certificado": BARCA["blue"], "Diploma": BARCA["gold"],
+        "Curso": BARCA["yellow"], "Otro": BARCA["ink40"],
+    }
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. Resumen ejecutivo
+    # ══════════════════════════════════════════════════════════════════════════
+    n_con = len(dc)
+    n_act = int((dc["lead_activado"] == "Activado").sum())
+    pct_act = n_act / n_con * 100 if n_con else 0.0
+    n_gan = int((dc["lead_status"] == "Negocio ganado").sum())
+    n_prog = dc["pgm"].apply(pgm_base).nunique()
+
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_card(k1, "Contactos",           f"{n_con:,}".replace(",", "."), BARCA["blue"])
+    kpi_card(k2, "Activados",           f"{n_act:,}".replace(",", "."), BARCA["gold"])
+    kpi_card(k3, "% Activación",        f"{pct_act:.1f}%",              BARCA["garnet"])
+    kpi_card(k4, "Programas distintos", n_prog,                         BARCA["blue_deep"])
+    st.markdown(
+        f"<div style='font-size:12px;color:{BARCA['ink40']};margin-top:6px'>"
+        f"ℹ️ <b>Activado</b> = el lead superó el estado 'Nuevo' en "
+        f"<code>lt_lead_status</code>. De estos contactos, <b>{n_gan}</b> están hoy "
+        f"en <b>Negocio ganado</b>.</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Reparto por canal
+    res = (dc.groupby("canal")
+           .agg(Contactos=("email", "count"),
+                Activados=("lead_activado", lambda s: int((s == "Activado").sum())))
+           .reindex(_canales_pres).fillna(0).reset_index())
+    res[["Contactos", "Activados"]] = res[["Contactos", "Activados"]].astype(int)
+    res["% Contactos"] = (res["Contactos"] / n_con * 100).round(1)
+    res["% Activación"] = (res["Activados"] / res["Contactos"].replace(0, pd.NA) * 100).round(1)
+
+    st.markdown("### 🧭 Reparto por canal de entrada")
+
+    _fichas = res.head(7)
+    cols = st.columns(len(_fichas))
+    for col, (_, r) in zip(cols, _fichas.iterrows()):
+        kpi_card(col, f"% {r['canal']}", f"{r['% Contactos']:.1f}%",
+                 _COLOR_CANAL.get(r["canal"], BARCA["ink60"]))
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 1.3])
+    with c1:
+        fig = px.pie(res, names="canal", values="Contactos",
+                     title="Reparto de contactos por canal", hole=0.55,
+                     color="canal", color_discrete_map=_COLOR_CANAL,
+                     category_orders={"canal": _canales_pres})
+        fig.update_traces(textposition="outside", textinfo="percent+label",
+                          marker=dict(line=dict(color=BARCA["white"], width=2)))
+        barca_layout(fig, 360)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.dataframe(
+            res.rename(columns={"canal": "Canal de entrada"})
+            [["Canal de entrada", "Contactos", "% Contactos", "Activados", "% Activación"]]
+            .style.background_gradient(subset=["Contactos"], cmap="Blues")
+            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+            .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                     "% Contactos": "{:.1f}%", "% Activación": "{:.1f}%"}),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "La columna que importa es **% Activación**: el volumen lo domina "
+            "Facebook Lead Ads, pero eso no dice nada de la calidad del canal."
+        )
+
+    # Evolución mensual
+    if dc["mes"].nunique() > 1:
+        ev = (dc.groupby(["mes", "canal"]).size().reset_index(name="Contactos")
+              .sort_values("mes"))
+        e1, e2 = st.columns(2)
+        with e1:
+            fig = px.bar(ev, x="mes", y="Contactos", color="canal", barmode="stack",
+                         title="Contactos por mes y canal",
+                         color_discrete_map=_COLOR_CANAL,
+                         category_orders={"canal": _canales_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.35, title="", font_size=9),
+                              xaxis_title="")
+            barca_layout(fig, 360)
+            st.plotly_chart(fig, use_container_width=True)
+        with e2:
+            _sinfb = ev[ev["canal"] != "Facebook Lead Ads"]
+            if not _sinfb.empty:
+                fig = px.bar(_sinfb, x="mes", y="Contactos", color="canal", barmode="stack",
+                             title="Igual, pero sin Facebook Lead Ads (para ver el resto)",
+                             color_discrete_map=_COLOR_CANAL,
+                             category_orders={"canal": _canales_pres})
+                fig.update_layout(legend=dict(orientation="h", y=-0.35, title="", font_size=9),
+                                  xaxis_title="")
+                barca_layout(fig, 360)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Helper de tabla cruzada (canal y país contra tipo de curso)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _cruce(dim, etiqueta, key, orden=None, top=None):
+        base = dc.copy()
+        if top:
+            mayores = base[dim].value_counts().head(top).index
+            base = base[base[dim].isin(mayores)]
+
+        piv_n = base.pivot_table(index=dim, columns="tipo_programa", values="email",
+                                 aggfunc="count", fill_value=0)
+        act = base[base["lead_activado"] == "Activado"]
+        piv_a = act.pivot_table(index=dim, columns="tipo_programa", values="email",
+                                aggfunc="count", fill_value=0) if not act.empty \
+            else piv_n * 0
+        for p in (piv_n, piv_a):
+            p.columns.name = None
+        cols_t = [t for t in _tipos_pres if t in piv_n.columns]
+        piv_n = piv_n.reindex(columns=cols_t, fill_value=0)
+        piv_a = piv_a.reindex(index=piv_n.index, columns=cols_t, fill_value=0)
+        piv_n.insert(0, "TOTAL", piv_n.sum(axis=1))
+        piv_a.insert(0, "TOTAL", piv_a.sum(axis=1))
+        if orden:
+            idx = [i for i in orden if i in piv_n.index]
+            piv_n, piv_a = piv_n.reindex(idx), piv_a.reindex(idx)
+        else:
+            piv_n = piv_n.sort_values("TOTAL", ascending=False)
+            piv_a = piv_a.reindex(piv_n.index)
+        piv_n.index.name = piv_a.index.name = etiqueta
+
+        t1, t2 = st.tabs(["👥 Contactos", "✅ Activados"])
+        with t1:
+            st.dataframe(piv_n.style.background_gradient(cmap="Blues").format("{:,.0f}"),
+                         use_container_width=True,
+                         height=min(560, len(piv_n) * 36 + 60))
+        with t2:
+            st.dataframe(piv_a.style.background_gradient(cmap="Greens").format("{:,.0f}"),
+                         use_container_width=True,
+                         height=min(560, len(piv_a) * 36 + 60))
+
+        largo = base.groupby([dim, "tipo_programa"]).size().reset_index(name="Contactos")
+        g1, g2 = st.columns(2)
+        with g1:
+            fig = px.bar(largo, x=dim, y="Contactos", color="tipo_programa",
+                         barmode="stack", title=f"Contactos por {etiqueta.lower()} y tipo",
+                         color_discrete_map=_COLOR_TIPO,
+                         category_orders={dim: piv_n.index.tolist(),
+                                          "tipo_programa": _tipos_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.45, title="", font_size=9),
+                              xaxis_title="")
+            barca_layout(fig, 380)
+            st.plotly_chart(fig, use_container_width=True)
+        with g2:
+            tasa = (base.groupby(dim)
+                    .agg(Contactos=("email", "count"),
+                         Activados=("lead_activado", lambda s: int((s == "Activado").sum())))
+                    .reset_index())
+            tasa["% Activación"] = (tasa["Activados"] / tasa["Contactos"] * 100).round(1)
+            tasa = tasa.sort_values("% Activación", ascending=True)
+            fig = px.bar(tasa, x="% Activación", y=dim, orientation="h",
+                         text="% Activación",
+                         title=f"Tasa de activación por {etiqueta.lower()}",
+                         color="% Activación",
+                         color_continuous_scale=[BARCA["line2"], BARCA["gold"], BARCA["blue_ink"]],
+                         labels={dim: ""})
+            fig.update_traces(texttemplate="%{text:.1f}%")
+            fig.update_layout(coloraxis_showscale=False,
+                              yaxis=dict(categoryorder="total ascending"))
+            barca_layout(fig, 380)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.download_button(
+            f"⬇️ Descargar {etiqueta.lower()} × tipo (CSV)",
+            data=piv_n.join(piv_a, lsuffix=" contactos", rsuffix=" activados")
+                      .reset_index().to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"contactos_{key}_tipo_{fi}_{ff}.csv",
+            mime="text/csv", key=f"dl_contactos_{key}",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. Por canal y tipo de curso
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🧭 Contactos por canal de entrada y tipo de curso")
+    _cruce("canal", "Canal", "canal", orden=_canales_pres)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. Por país y tipo de curso
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🌍 Contactos por país y tipo de curso")
+    _top_pais = st.slider("Nº de países a mostrar", 5, 40, 15, key="contactos_top_pais")
+    _cruce("pais", "País", "pais", top=_top_pais)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. Canal × origen de tráfico (aquí es donde se ve la IA)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🤖 Canal de entrada × origen de tráfico")
+    st.caption(
+        "El **canal** es por dónde rellenó el formulario; el **origen** es de dónde "
+        "venía. Son cosas distintas: las **Referencias de la IA** (ChatGPT y "
+        "similares) son un origen de tráfico, no un canal — llegan a la web y "
+        "entran por el formulario normal."
+    )
+    piv_cf = dc.pivot_table(index="canal", columns="fuente", values="email",
+                            aggfunc="count", fill_value=0)
+    piv_cf.columns.name = None
+    piv_cf.insert(0, "TOTAL", piv_cf.sum(axis=1))
+    piv_cf = piv_cf.reindex([c for c in _canales_pres if c in piv_cf.index])
+    piv_cf.index.name = "Canal"
+    st.dataframe(piv_cf.style.background_gradient(cmap="Blues").format("{:,.0f}"),
+                 use_container_width=True,
+                 height=min(500, len(piv_cf) * 36 + 60))
+    _ia = int(dc[dc["fuente"] == "Referencias de la IA"].shape[0])
+    if _ia:
+        _por = dc[dc["fuente"] == "Referencias de la IA"]["canal"].value_counts()
+        st.caption(
+            f"🤖 **{_ia} contactos llegaron desde IA** en este período, sobre todo por "
+            + ", ".join(f"**{k}** ({v})" for k, v in _por.head(3).items()) + "."
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. Cruce canal × país × tipo
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🔀 Cruce canal × país × tipo de curso")
+
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        _sanea_estado("cx_canal", _canales_pres, multi=True)
+        _sel_c = st.multiselect("Canal", _canales_pres, key="cx_canal")
+    with f2:
+        _p = sorted(dc["pais"].dropna().unique())
+        _sanea_estado("cx_pais", _p, multi=True)
+        _sel_p = st.multiselect("País", _p, key="cx_pais")
+    with f3:
+        _sanea_estado("cx_tipo", _tipos_pres, multi=True)
+        _sel_t = st.multiselect("Tipo de curso", _tipos_pres, key="cx_tipo")
+
+    dx = dc.copy()
+    if _sel_c: dx = dx[dx["canal"].isin(_sel_c)]
+    if _sel_p: dx = dx[dx["pais"].isin(_sel_p)]
+    if _sel_t: dx = dx[dx["tipo_programa"].isin(_sel_t)]
+
+    if dx.empty:
+        st.info("No hay contactos con esa combinación.")
+    else:
+        cruce = (dx.groupby(["canal", "pais", "tipo_programa"])
+                 .agg(Contactos=("email", "count"),
+                      Activados=("lead_activado", lambda s: int((s == "Activado").sum())))
+                 .reset_index().sort_values("Contactos", ascending=False))
+        cruce["% Activación"] = (cruce["Activados"] / cruce["Contactos"] * 100).round(1)
+        cruce["% del total"] = (cruce["Contactos"] / n_con * 100).round(2)
+        cruce = cruce.rename(columns={"canal": "Canal", "pais": "País",
+                                      "tipo_programa": "Tipo de curso"})
+        tot = pd.DataFrame([{
+            "Canal": "TOTAL", "País": "", "Tipo de curso": "",
+            "Contactos": int(cruce["Contactos"].sum()),
+            "Activados": int(cruce["Activados"].sum()),
+            "% Activación": round(cruce["Activados"].sum() / cruce["Contactos"].sum() * 100, 1),
+            "% del total": round(cruce["Contactos"].sum() / n_con * 100, 2),
+        }])
+        cruce_show = pd.concat([cruce, tot], ignore_index=True)
+        st.dataframe(
+            cruce_show.style
+                .background_gradient(subset=["Contactos"], cmap="Blues")
+                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+                .format({"% Activación": "{:.1f}%", "% del total": "{:.2f}%"}),
+            use_container_width=True, hide_index=True, height=460,
+        )
+        st.caption(f"{len(cruce)} combinaciones de canal × país × tipo.")
+        st.download_button(
+            "⬇️ Descargar cruce completo (CSV)",
+            data=cruce_show.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"contactos_cruce_canal_pais_tipo_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_contactos_cruce",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. Ranking de programas
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🏆 Ranking de programas por captación")
+    st.caption("Agrupado por **código pgm base**, que unifica las variantes de idioma "
+               "(`CE_0044_ES` y `CE_0044_EN` son el mismo programa).")
+
+    dr = dc.copy()
+    dr["_base"] = dr["pgm"].apply(pgm_base)
+    dr = dr[dr["_base"] != ""]
+    if dr.empty:
+        st.info("No hay contactos con código de programa.")
+    else:
+        rank = (dr.groupby("_base")
+                .agg(Contactos=("email", "count"),
+                     Activados=("lead_activado", lambda s: int((s == "Activado").sum())),
+                     Tipo=("tipo_programa", lambda s: s.mode().iat[0] if not s.mode().empty else "Otro"),
+                     Canal=("canal", lambda s: s.mode().iat[0] if not s.mode().empty else ""))
+                .reset_index().rename(columns={"_base": "Código"}))
+        rank["% Activación"] = (rank["Activados"] / rank["Contactos"] * 100).round(1)
+        rank["% del total"] = (rank["Contactos"] / n_con * 100).round(1)
+        rank = rank.sort_values("Contactos", ascending=False)
+
+        _n_top = st.slider("Nº de programas en el ranking", 5, 40, 15,
+                           key="contactos_top_prog")
+        top = rank.head(_n_top)
+        fig = px.bar(top.sort_values("Contactos"), x="Contactos", y="Código",
+                     orientation="h", text="Contactos",
+                     title=f"Top {len(top)} programas por contactos captados",
+                     color="Tipo", color_discrete_map=_COLOR_TIPO,
+                     category_orders={"Tipo": _tipos_pres})
+        fig.update_layout(legend=dict(orientation="h", y=-0.18, title=""),
+                          yaxis=dict(categoryorder="total ascending"))
+        barca_layout(fig, max(420, len(top) * 30 + 140))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(
+            top[["Código", "Tipo", "Canal", "Contactos", "% del total",
+                 "Activados", "% Activación"]]
+            .style.background_gradient(subset=["Contactos"], cmap="Blues")
+            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+            .format({"% Activación": "{:.1f}%", "% del total": "{:.1f}%"}),
+            use_container_width=True, hide_index=True,
+            height=min(600, len(top) * 36 + 40),
+            column_config={"Canal": st.column_config.TextColumn(
+                "Canal principal", width="medium")},
+        )
+        st.download_button(
+            "⬇️ Descargar ranking completo (CSV)",
+            data=rank.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"ranking_programas_contactos_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_contactos_ranking",
+        )
+
+    with st.expander("📋 Ver detalle de contactos"):
+        cols = ["fecha", "canal", "record_d1", "pgm", "tipo_programa", "pais",
+                "fuente", "lead_status", "lead_activado", "email"]
+        det = (dc[[c for c in cols if c in dc.columns]]
+               .rename(columns={"fecha": "Fecha creación", "canal": "Canal",
+                                "record_d1": "Formulario", "pgm": "Programa (pgm)",
+                                "tipo_programa": "Tipo", "pais": "País",
+                                "fuente": "Origen de tráfico", "lead_status": "Estado",
+                                "lead_activado": "Actividad", "email": "Email"})
+               .sort_values("Fecha creación", ascending=False))
+        st.dataframe(det, use_container_width=True, hide_index=True, height=460)
+        st.download_button(
+            "⬇️ Descargar detalle de contactos (CSV)",
+            data=det.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"contactos_detalle_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_contactos_detalle",
+        )
+
+    st.markdown(
+        f"<br><div style='text-align:center;color:{BARCA['ink40']};font-size:12px'>"
+        f"{ACCOUNT_NAME} · Contactos Low Ticket por canal de entrada · Datos "
+        f"actualizados automáticamente cada 5 min</div>",
         unsafe_allow_html=True
     )
 
