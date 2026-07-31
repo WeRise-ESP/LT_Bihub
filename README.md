@@ -76,8 +76,11 @@ git push origin main          # 2) publica → Streamlit Cloud redespliega (~1-3
 
 ## 🧭 Estructura de la app
 
-Tres páginas (selector "📄 Página" en el panel lateral):
+Cuatro páginas (selector "📄 Página" en el panel lateral):
 - **📊 Dashboard general** — KPIs, embudo Low Ticket y negocios de venta.
+- **💶 Ventas y Facturación** — resumen ejecutivo (ventas, facturación, ticket medio
+  y % de facturación por tipo de curso), matrículas y facturación por origen y por
+  país, cruce origen × país × tipo, y ranking de programas.
 - **🎓 Conversión por Programa** — conversión agrupada por código `pgm`.
 - **🧲 Análisis de Leads** — origen, fuente y campaña por programa.
 
@@ -92,6 +95,17 @@ Tres páginas (selector "📄 Página" en el panel lateral):
 | **Activado / Sin actividad** | ¿El lead superó el estado "Nuevo"? |
 | **Ventas** | Negocios en **Cierre ganado**, por `closedate` |
 | **Negocios perdidos** | Negocios en etapas de pérdida, por `closedate` |
+| **Facturación** | `amount` del negocio |
+| **Tipo de curso** | Código del producto del **negocio** (`codigo_del_producto`) y, si no, el nombre del producto |
+
+### Tipos de curso
+
+| Prefijo | Producto | Ejemplo real |
+|---|---|---|
+| `CE_` | **Certificado** | *Certificate in Sports Cardiology* |
+| `P_` | **Diploma** | *Professional Diploma in Digital Marketing…* |
+| `C_` | **Curso** | *Course of Assessment Methods…* |
+| `EP_` `PG_` `M_` | **High Ticket** | Se venden también por este canal; se marcan `(HT)` y se muestran aparte |
 
 ### ⚠️ Las ventas vienen de dos pipelines
 
@@ -100,15 +114,16 @@ El dashboard aplica un **corte duro** el **1 de mayo de 2026** (`FECHA_CORTE_WOO
 anteriores se leen del pipeline histórico y los posteriores de WooCommerce. Sin ese corte se
 contarían dos veces los pedidos del solape.
 
-### ⚠️ Limitación de atribución
+### Cómo se sabe qué se ha vendido
 
-Muchos pedidos de WooCommerce no enlazan con un contacto que tenga `pgm`. En un muestreo de
-60 pedidos Completed, el 53 % tenía el contacto **sin `pgm`**. Por eso:
+El `pgm` del **contacto** solo está relleno en ~40 % de los pedidos, así que el producto
+se identifica desde el **negocio**: primero `codigo_del_producto` (99 % relleno en
+WooCommerce) y, si no, el nombre del producto de los *line items* o del propio negocio.
+Con esta cadena la atribución por programa está en el **91 %**.
 
-- los **totales de venta** son correctos (salen del pipeline),
-- pero la **conversión por programa** infra-atribuye (muchos negocios caen en "Sin programa").
-
-Para cerrarlo hay que rellenar `pgm` o `curso` en los contactos que compran por WooCommerce.
+Queda un resto sin identificar (~9 %): son productos que no siguen la nomenclatura
+`pgm` (Barça Coach Academy, Coaches Academy, Football Scouting, gift cards…). Aparecen
+agrupados como **"Otros"**.
 
 ---
 

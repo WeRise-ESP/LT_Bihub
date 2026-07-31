@@ -246,7 +246,13 @@ def hs_post(url: str, payload: dict, max_retries: int = 5) -> dict:
                 raise
             time.sleep(min(1.5 * (attempt + 1), 10))
             continue
-        if r.status_code == 200:
+        # 2xx = éxito. Ojo con el 207 (Multi-Status): los endpoints batch lo
+        # devuelven cuando parte de los inputs falla — p. ej. un negocio sin
+        # contacto asociado. Es una respuesta VÁLIDA con los resultados buenos
+        # dentro; tratarla como error hacía que un solo negocio huérfano
+        # tumbase el lote entero de 100 y esos negocios se quedaran sin país,
+        # fuente ni programa.
+        if 200 <= r.status_code < 300:
             return r.json()
         if r.status_code == 429 or r.status_code >= 500:
             wait = r.headers.get("Retry-After")
@@ -265,10 +271,24 @@ def hs_post(url: str, payload: dict, max_retries: int = 5) -> dict:
 PGM_PREFIXES = ("P_", "CE_", "C_")
 
 # Etiquetas legibles del "tipo de programa" (derivado del prefijo de pgm).
+# Verificado contra los nombres reales de los productos en los line items:
+#   CE_0009_EN → "Certificate in Sports Cardiology"
+#   P_0007_EN  → "Professional Diploma in Digital Marketing, Sponsorship..."
+#   C_0167_EN  → "Course of Assessment Methods in Sports Physiotherapy"
+# Ojo: `P_` es DIPLOMA, no "programa".
 TIPO_PROGRAMA = {
     "CE_": "Certificado",
-    "P_":  "Programa",
+    "P_":  "Diploma",
     "C_":  "Curso",
+}
+
+# Prefijos de High Ticket. No forman parte del universo de leads de este
+# dashboard, pero SÍ aparecen en algunos pedidos de WooCommerce, así que hay
+# que saber etiquetarlos cuando se clasifica una venta por su producto.
+TIPO_PROGRAMA_HT = {
+    "EP_": "Executive Programme (HT)",
+    "PG_": "Postgrado (HT)",
+    "M_":  "Máster (HT)",
 }
 
 # Mínimo histórico para la opción "todos": 2024-01-01
@@ -490,6 +510,82 @@ def pgm_base(pgm_val: str) -> str:
     if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-1].isalpha():
         return "_".join(parts[:-1])
     return v
+
+
+# ── Clasificación de producto vendido ─────────────────────────────────────────
+# El tipo de curso de una VENTA no se saca del contacto (su `pgm` solo está
+# relleno en ~40 % de los pedidos) sino del propio negocio, que es mucho más
+# fiable:
+#   1. `codigo_del_producto` — en WooCommerce trae el código pgm (99 % relleno).
+#   2. el nombre del producto (line item) o el del negocio, por palabras clave,
+#      que es lo que salva al pipeline histórico (ahí el código es un id numérico).
+
+_RE_CODIGO = re.compile(r"\b((?:CE|EP|PG|P|C|M)_\d+)(?:_([A-Z]{2}))?\b", re.I)
+
+# Palabras clave por tipo. El orden importa: "Professional Diploma" tiene que
+# ganar a "Program" en títulos que contienen las dos.
+_PALABRAS_TIPO = [
+    (re.compile(r"\b(professional\s+diploma|diploma\s+profesional|diplomado|diploma)\b", re.I), "Diploma"),
+    (re.compile(r"\b(certificate|certificado|certificat|certificat)\b", re.I), "Certificado"),
+    (re.compile(r"\b(m[áa]ster|master)\b", re.I), "Máster (HT)"),
+    (re.compile(r"\b(postgrad\w*|postgrau)\b", re.I), "Postgrado (HT)"),
+    (re.compile(r"\b(executive\s+program\w*)\b", re.I), "Executive Programme (HT)"),
+    (re.compile(r"\b(curso|course)\b", re.I), "Curso"),
+]
+
+
+def codigo_producto(*candidatos) -> str:
+    """
+    Primer código de programa (p. ej. `CE_0040_ES`) que aparezca en los textos
+    dados, en mayúsculas. Devuelve "" si ninguno lo contiene.
+    """
+    for c in candidatos:
+        m = _RE_CODIGO.search((c or "").strip())
+        if m:
+            return m.group(0).upper()
+    return ""
+
+
+def tipo_producto(codigo: str, *textos) -> str:
+    """
+    Tipo de curso de una venta. Prioriza el prefijo del código; si no hay
+    código utilizable, cae a las palabras clave del nombre del producto.
+    """
+    v = (codigo or "").strip().upper()
+    for pfx, label in list(TIPO_PROGRAMA.items()) + list(TIPO_PROGRAMA_HT.items()):
+        if v.startswith(pfx):
+            return label
+    for txt in textos:
+        t = (txt or "").strip()
+        if not t:
+            continue
+        for rx, label in _PALABRAS_TIPO:
+            if rx.search(t):
+                return label
+    return "Otros"
+
+
+def limpia_nombre_producto(nombre: str, dealname: str, codigo: str) -> str:
+    """
+    Nombre presentable del producto. Los line items vienen como
+    "Certificate in Sports Cardiology [CE_0009] - English (CE_0009_EN)" y los
+    negocios del pipeline histórico como "Nombre del curso - email@dominio",
+    así que se recorta el ruido de ambos.
+    """
+    n = (nombre or "").strip()
+    if not n:
+        n = (dealname or "").strip()
+        # "Curso - alguien@dominio.com" o "alguien@dominio.com - Curso"
+        partes = [p.strip() for p in n.split(" - ")]
+        partes = [p for p in partes if "@" not in p]
+        n = max(partes, key=len) if partes else n
+    n = re.sub(r"\s*\[[^\]]*\]", "", n)          # [CE_0009]
+    n = re.sub(r"\s*\([^)]*\)\s*$", "", n)        # (CE_0009_EN) final
+    n = re.sub(r"\s*-\s*(English|Spanish|Español|Catal[àa]|Portugu[êe]s)\s*$", "", n, flags=re.I)
+    n = n.strip(" -–·")
+    if not n:
+        return codigo or "Sin identificar"
+    return n
 
 
 def resolve_fuente(cp):
@@ -855,7 +951,8 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
             payload = {
                 "filterGroups": [{"filters": filters}],
                 "properties": ["dealname", "closedate", "createdate",
-                               "curso", "id_curso", "amount"],
+                               "curso", "id_curso", "amount",
+                               "codigo_del_producto"],
                 "limit": 100,
             }
             if after:
@@ -880,6 +977,8 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                     "mes":          fecha_cierre[:7] if fecha_cierre else "",
                     "importe":      _imp,
                     "curso":        (p.get("curso") or "").strip(),
+                    "dealname":     (p.get("dealname") or "").strip(),
+                    "cod_producto": (p.get("codigo_del_producto") or "").strip(),
                 }
 
             pg = data.get("paging", {})
@@ -992,6 +1091,8 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 "edad":          data.get("edad"),
                 "nivel_estudios": data.get("nivel_estudios", ""),
                 "curso":         info.get("curso", ""),
+                "dealname":      info.get("dealname", ""),
+                "cod_producto":  info.get("cod_producto", ""),
                 "importe":       info.get("importe", 0.0),
                 "contacto_creado": data["contacto_creado"],
                 "fecha_cierre":  info["fecha_cierre"],
@@ -1031,7 +1132,8 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
 
             payload = {
                 "filterGroups": [{"filters": filters}],
-                "properties": ["dealname", "closedate", "curso", "nombre_programa", "id_curso"],
+                "properties": ["dealname", "closedate", "curso", "nombre_programa",
+                               "id_curso", "codigo_del_producto"],
                 "limit": 100,
             }
             if after:
@@ -1048,6 +1150,11 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
                     "mes":             fecha_c[:7] if fecha_c else "",
                     "deal_nombre_prog": (p.get("nombre_programa") or "").strip(),
                     "deal_curso":       (p.get("curso") or "").strip(),
+                    # El código del producto vive en el propio negocio (99 % en
+                    # WooCommerce); es mucho mejor fuente que el `pgm` del
+                    # contacto, que solo está relleno en ~40 % de los pedidos.
+                    "deal_codigo":      codigo_producto(p.get("codigo_del_producto"),
+                                                        p.get("dealname")),
                 }
 
             pg = data.get("paging", {})
@@ -1133,7 +1240,8 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
         rows.append({
             "deal_id":      did,
             "programa":     programa,
-            "pgm":          cd.get("pgm", ""),
+            # Código del negocio primero; el del contacto solo como respaldo.
+            "pgm":          info.get("deal_codigo") or cd.get("pgm", ""),
             "pais":         cd["pais"],
             "mercado":      resolve_mercado(cd["pais"]),
             "fuente":       cd["fuente"],
@@ -1142,6 +1250,107 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
         })
 
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_nombres_producto(deal_ids: tuple) -> dict:
+    """
+    deal_id → nombre del producto, sacado de sus line items.
+    Hace falta porque los negocios de WooCommerce se llaman "#15497 Chloe
+    Thompson" (número de pedido, no producto). Los del pipeline histórico sí
+    llevan el nombre en el dealname, así que ahí esto es solo un refuerzo.
+    """
+    ids = [str(d) for d in deal_ids]
+    if not ids:
+        return {}
+
+    # 1. deal → line items
+    pares = []
+    for i in range(0, len(ids), 100):
+        try:
+            data = hs_post(f"{BASE}/crm/v4/associations/deals/line_items/batch/read",
+                           {"inputs": [{"id": d} for d in ids[i:i + 100]]})
+        except Exception:
+            continue
+        for it in data.get("results", []):
+            did = str(it.get("from", {}).get("id", ""))
+            for t in it.get("to", []):
+                pares.append((did, str(t["toObjectId"])))
+
+    if not pares:
+        return {}
+
+    # 2. line item → nombre y sku
+    lids = list({p[1] for p in pares})
+    props = {}
+    for i in range(0, len(lids), 100):
+        try:
+            data = hs_post(f"{BASE}/crm/v3/objects/line_items/batch/read",
+                           {"inputs": [{"id": x} for x in lids[i:i + 100]],
+                            "properties": ["name", "hs_sku"]})
+        except Exception:
+            continue
+        for li in data.get("results", []):
+            props[str(li["id"])] = li["properties"]
+
+    # 3. Un pedido puede tener varias líneas; nos quedamos con la primera con
+    #    nombre, que es la que identifica el curso comprado.
+    out = {}
+    for did, lid in pares:
+        if did in out:
+            continue
+        p = props.get(lid) or {}
+        nombre = (p.get("name") or "").strip()
+        if nombre:
+            out[did] = {"nombre": nombre, "sku": (p.get("hs_sku") or "").strip()}
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
+    """
+    Una fila por VENTA (negocio en Cierre ganado) con el producto identificado,
+    su tipo, el país y el origen del comprador, y el importe facturado.
+    Es la base de la página de Ventas y Facturación.
+    """
+    df = fetch_negocios_cerrados(fecha_inicio, fecha_fin)
+    if df.empty or "etapa" not in df.columns:
+        return pd.DataFrame(columns=[
+            "deal_id", "producto", "cod_producto", "tipo_curso", "pais",
+            "mercado", "fuente", "importe", "fecha_cierre", "mes"])
+
+    g = df[df["etapa"] == "Cierre ganado"].drop_duplicates("deal_id").copy()
+    if g.empty:
+        return pd.DataFrame(columns=[
+            "deal_id", "producto", "cod_producto", "tipo_curso", "pais",
+            "mercado", "fuente", "importe", "fecha_cierre", "mes"])
+
+    li = fetch_nombres_producto(tuple(g["deal_id"].tolist()))
+
+    filas = []
+    for _, r in g.iterrows():
+        info = li.get(str(r["deal_id"]), {})
+        nombre_li = info.get("nombre", "")
+        sku       = info.get("sku", "")
+        # El código puede venir del propio negocio, del sku o del texto del
+        # line item; y como último recurso, del `pgm` del contacto.
+        codigo = codigo_producto(r.get("cod_producto"), sku, nombre_li, r.get("pgm"))
+        tipo   = tipo_producto(codigo, nombre_li, r.get("dealname"), r.get("curso"))
+        filas.append({
+            "deal_id":      r["deal_id"],
+            "producto":     limpia_nombre_producto(nombre_li, r.get("dealname"), codigo),
+            "cod_producto": codigo,
+            # Código sin sufijo de idioma: agrupa CE_0040_ES y CE_0040_EN
+            "cod_base":     pgm_base(codigo),
+            "tipo_curso":   tipo,
+            "pais":         r.get("pais") or "Sin datos",
+            "mercado":      resolve_mercado(r.get("pais") or "Sin datos"),
+            "fuente":       r.get("fuente") or "Sin datos",
+            "importe":      float(r.get("importe") or 0.0),
+            "fecha_cierre": r.get("fecha_cierre", ""),
+            "mes":          r.get("mes", ""),
+        })
+    return pd.DataFrame(filas)
 
 
 # ── Helpers de gráficos ───────────────────────────────────────────────────────
@@ -1495,8 +1704,8 @@ def main():
                     unsafe_allow_html=True)
         pagina = st.radio(
             "Navegación",
-            ["📊 Dashboard general", "🎓 Conversión por Programa",
-             "🧲 Análisis de Leads"],
+            ["📊 Dashboard general", "💶 Ventas y Facturación",
+             "🎓 Conversión por Programa", "🧲 Análisis de Leads"],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -1653,6 +1862,20 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     # PÁGINA: Conversión por Programa (return anticipado)
     # ══════════════════════════════════════════════════════════════════════════
+    if pagina == "💶 Ventas y Facturación":
+        with st.spinner("Cargando el detalle de ventas..."):
+            df_ventas = fetch_ventas_detalle(str(fi), str(ff))
+        # Respeta los filtros del panel lateral que aplican a una venta
+        if not df_ventas.empty:
+            if filtro_fuente:
+                df_ventas = df_ventas[df_ventas["fuente"].isin(filtro_fuente)]
+            if filtro_mercado:
+                df_ventas = df_ventas[df_ventas["mercado"].isin(filtro_mercado)]
+            if filtro_pais:
+                df_ventas = df_ventas[df_ventas["pais"].isin(filtro_pais)]
+        _render_ventas_page(df_ventas, periodo_txt, fi, ff)
+        return
+
     if pagina == "🎓 Conversión por Programa":
         _render_conversion_page(df, df_ganados_prog, fi, ff)
         return
@@ -2327,6 +2550,370 @@ def main():
     )
 
 
+def _render_ventas_page(dv, periodo_txt, fi, ff):
+    """Página de Ventas y Facturación: qué se vende, a quién y por cuánto."""
+    st.markdown("## 💶 Ventas y Facturación")
+    st.caption(
+        f"📅 {periodo_txt} · Una fila por **negocio en Cierre ganado**, por fecha de "
+        f"cierre. El **tipo de curso** se identifica desde el propio negocio "
+        f"(`codigo_del_producto` y nombre del producto), no desde el `pgm` del "
+        f"contacto — por eso cubre casi todas las ventas. Respeta los filtros del "
+        f"panel lateral."
+    )
+
+    if dv.empty:
+        st.info("No hay ventas en el período y filtros seleccionados.")
+        return
+
+    # Orden estable de los tipos: primero Low Ticket, luego lo que se cuela de HT
+    _ORDEN_TIPO = (list(TIPO_PROGRAMA.values())
+                   + list(TIPO_PROGRAMA_HT.values()) + ["Otros"])
+    _tipos_pres = [t for t in _ORDEN_TIPO if t in set(dv["tipo_curso"])]
+    _COLOR_TIPO = {
+        "Certificado":              BARCA["blue"],
+        "Diploma":                  BARCA["gold"],
+        "Curso":                    BARCA["yellow"],
+        "Executive Programme (HT)": BARCA["garnet"],
+        "Postgrado (HT)":           BARCA["garnet_deep"],
+        "Máster (HT)":              BARCA["blue_deep"],
+        "Otros":                    BARCA["ink40"],
+    }
+
+    def _eur(x):
+        return f"{x:,.0f} €".replace(",", ".")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. Resumen ejecutivo
+    # ══════════════════════════════════════════════════════════════════════════
+    n_ventas = len(dv)
+    facturacion = float(dv["importe"].sum())
+    ticket = facturacion / n_ventas if n_ventas else 0.0
+    n_prog = dv[dv["cod_base"] != ""]["cod_base"].nunique() or dv["producto"].nunique()
+
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_card(k1, "Ventas",       f"{n_ventas:,}".replace(",", "."), BARCA["blue"])
+    kpi_card(k2, "Facturación",  _eur(facturacion),                 BARCA["gold"])
+    kpi_card(k3, "Ticket medio", _eur(ticket),                      BARCA["garnet"])
+    kpi_card(k4, "Programas distintos", n_prog,                     BARCA["blue_deep"])
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Reparto por tipo de curso
+    res = (dv.groupby("tipo_curso")
+           .agg(Ventas=("deal_id", "count"), Facturacion=("importe", "sum"))
+           .reindex(_tipos_pres).fillna(0).reset_index())
+    res["Ventas"] = res["Ventas"].astype(int)
+    res["% Facturación"] = (res["Facturacion"] / facturacion * 100).round(1) if facturacion else 0.0
+    res["% Ventas"] = (res["Ventas"] / n_ventas * 100).round(1) if n_ventas else 0.0
+    res["Ticket medio"] = (res["Facturacion"] / res["Ventas"].replace(0, pd.NA)).round(0)
+
+    st.markdown("### 🧩 Reparto por tipo de curso")
+
+    # Fichas de % de facturación por tipo, que es el dato que se mira primero
+    cols = st.columns(len(res)) if len(res) <= 7 else st.columns(7)
+    for col, (_, r) in zip(cols, res.iterrows()):
+        kpi_card(col, f"% Fact. {r['tipo_curso']}",
+                 f"{r['% Facturación']:.1f}%",
+                 _COLOR_TIPO.get(r["tipo_curso"], BARCA["ink60"]))
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 1.3])
+    with c1:
+        fig = px.pie(res, names="tipo_curso", values="Facturacion",
+                     title="Reparto de la facturación por tipo", hole=0.55,
+                     color="tipo_curso", color_discrete_map=_COLOR_TIPO,
+                     category_orders={"tipo_curso": _tipos_pres})
+        fig.update_traces(textposition="outside", textinfo="percent+label",
+                          marker=dict(line=dict(color=BARCA["white"], width=2)))
+        barca_layout(fig, 360)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.dataframe(
+            res.rename(columns={"tipo_curso": "Tipo de curso",
+                                "Facturacion": "Facturación (€)"})
+            [["Tipo de curso", "Ventas", "% Ventas", "Facturación (€)",
+              "% Facturación", "Ticket medio"]]
+            .style.background_gradient(subset=["Facturación (€)"], cmap="YlOrBr")
+            .format({"Facturación (€)": "{:,.0f} €", "Ticket medio": "{:,.0f} €",
+                     "% Facturación": "{:.1f}%", "% Ventas": "{:.1f}%"}),
+            use_container_width=True, hide_index=True,
+        )
+        if "Máster (HT)" in _tipos_pres or "Postgrado (HT)" in _tipos_pres \
+                or "Executive Programme (HT)" in _tipos_pres:
+            _ht = res[res["tipo_curso"].str.contains("HT", regex=False)]
+            st.caption(
+                f"ℹ️ Los tipos marcados **(HT)** son productos de High Ticket "
+                f"vendidos por el mismo canal: {int(_ht['Ventas'].sum())} ventas y "
+                f"{_eur(float(_ht['Facturacion'].sum()))} "
+                f"({_ht['% Facturación'].sum():.1f}% de la facturación). No son Low "
+                f"Ticket, pero pasan por aquí — por eso se muestran aparte."
+            )
+
+    # Evolución mensual, si el período abarca más de un mes
+    if dv["mes"].nunique() > 1:
+        ev = (dv.groupby(["mes", "tipo_curso"])
+              .agg(Ventas=("deal_id", "count"), Facturacion=("importe", "sum"))
+              .reset_index().sort_values("mes"))
+        e1, e2 = st.columns(2)
+        with e1:
+            fig = px.bar(ev, x="mes", y="Ventas", color="tipo_curso", barmode="stack",
+                         title="Ventas por mes y tipo", color_discrete_map=_COLOR_TIPO,
+                         category_orders={"tipo_curso": _tipos_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""), xaxis_title="")
+            barca_layout(fig, 340)
+            st.plotly_chart(fig, use_container_width=True)
+        with e2:
+            fig = px.bar(ev, x="mes", y="Facturacion", color="tipo_curso", barmode="stack",
+                         title="Facturación por mes y tipo", color_discrete_map=_COLOR_TIPO,
+                         category_orders={"tipo_curso": _tipos_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""),
+                              xaxis_title="", yaxis_title="€")
+            barca_layout(fig, 340)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Helper de tabla cruzada (se usa para origen y para país)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _cruce(dim, etiqueta, key, top=None):
+        base = dv.copy()
+        if top:
+            mayores = (base.groupby(dim)["importe"].sum()
+                       .sort_values(ascending=False).head(top).index)
+            base = base[base[dim].isin(mayores)]
+
+        piv_n = (base.pivot_table(index=dim, columns="tipo_curso", values="deal_id",
+                                  aggfunc="count", fill_value=0))
+        piv_e = (base.pivot_table(index=dim, columns="tipo_curso", values="importe",
+                                  aggfunc="sum", fill_value=0.0))
+        for p in (piv_n, piv_e):
+            p.columns.name = None
+        piv_n = piv_n.reindex(columns=[t for t in _tipos_pres if t in piv_n.columns], fill_value=0)
+        piv_e = piv_e.reindex(columns=[t for t in _tipos_pres if t in piv_e.columns], fill_value=0.0)
+        piv_n.insert(0, "TOTAL", piv_n.sum(axis=1))
+        piv_e.insert(0, "TOTAL", piv_e.sum(axis=1))
+        piv_n = piv_n.sort_values("TOTAL", ascending=False)
+        piv_e = piv_e.reindex(piv_n.index)
+        piv_n.index.name = piv_e.index.name = etiqueta
+
+        t1, t2 = st.tabs(["🎓 Matrículas", "💶 Facturación"])
+        with t1:
+            st.dataframe(
+                piv_n.style.background_gradient(cmap="Blues").format("{:,.0f}"),
+                use_container_width=True,
+                height=min(560, len(piv_n) * 36 + 60),
+            )
+        with t2:
+            st.dataframe(
+                piv_e.style.background_gradient(cmap="YlOrBr").format("{:,.0f} €"),
+                use_container_width=True,
+                height=min(560, len(piv_e) * 36 + 60),
+            )
+
+        g1, g2 = st.columns(2)
+        largo = base.groupby([dim, "tipo_curso"]).agg(
+            Ventas=("deal_id", "count"), Facturacion=("importe", "sum")).reset_index()
+        orden = piv_n.index.tolist()
+        with g1:
+            fig = px.bar(largo, x=dim, y="Ventas", color="tipo_curso", barmode="stack",
+                         title=f"Matrículas por {etiqueta.lower()} y tipo",
+                         color_discrete_map=_COLOR_TIPO,
+                         category_orders={dim: orden, "tipo_curso": _tipos_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.45, title="", font_size=9),
+                              xaxis_title="")
+            barca_layout(fig, 380)
+            st.plotly_chart(fig, use_container_width=True)
+        with g2:
+            fig = px.bar(largo, x=dim, y="Facturacion", color="tipo_curso", barmode="stack",
+                         title=f"Facturación por {etiqueta.lower()} y tipo",
+                         color_discrete_map=_COLOR_TIPO,
+                         category_orders={dim: orden, "tipo_curso": _tipos_pres})
+            fig.update_layout(legend=dict(orientation="h", y=-0.45, title="", font_size=9),
+                              xaxis_title="", yaxis_title="€")
+            barca_layout(fig, 380)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.download_button(
+            f"⬇️ Descargar {etiqueta.lower()} × tipo (CSV)",
+            data=piv_e.join(piv_n, lsuffix=" €", rsuffix=" ventas")
+                      .reset_index().to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"ventas_{key}_tipo_{fi}_{ff}.csv",
+            mime="text/csv", key=f"dl_ventas_{key}",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. Por origen y tipo de curso
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 📡 Matrículas y facturación por origen y tipo de curso")
+    st.caption("**Origen** = fuente de tráfico original del contacto que compró "
+               "(la más reciente si no tiene original).")
+    _cruce("fuente", "Origen", "origen")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. Por país y tipo de curso
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🌍 Matrículas y facturación por país y tipo de curso")
+    _top_pais = st.slider("Nº de países a mostrar (por facturación)", 5, 40, 15,
+                          key="ventas_top_pais")
+    _cruce("pais", "País", "pais", top=_top_pais)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. Cruce origen × país × tipo
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🔀 Cruce origen × país × tipo de curso")
+    st.caption("Las tres dimensiones a la vez. Filtra arriba para acotar y usa las "
+               "cabeceras para ordenar.")
+
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        _o = sorted(dv["fuente"].dropna().unique())
+        _sanea_estado("vx_fuente", _o, multi=True)
+        _sel_o = st.multiselect("Origen", _o, key="vx_fuente")
+    with f2:
+        _p = sorted(dv["pais"].dropna().unique())
+        _sanea_estado("vx_pais", _p, multi=True)
+        _sel_p = st.multiselect("País", _p, key="vx_pais")
+    with f3:
+        _sanea_estado("vx_tipo", _tipos_pres, multi=True)
+        _sel_t = st.multiselect("Tipo de curso", _tipos_pres, key="vx_tipo")
+
+    dx = dv.copy()
+    if _sel_o: dx = dx[dx["fuente"].isin(_sel_o)]
+    if _sel_p: dx = dx[dx["pais"].isin(_sel_p)]
+    if _sel_t: dx = dx[dx["tipo_curso"].isin(_sel_t)]
+
+    if dx.empty:
+        st.info("No hay ventas con esa combinación.")
+    else:
+        cruce = (dx.groupby(["fuente", "pais", "tipo_curso"])
+                 .agg(Matrículas=("deal_id", "count"),
+                      Facturación=("importe", "sum"))
+                 .reset_index()
+                 .sort_values("Facturación", ascending=False))
+        cruce["Ticket medio"] = (cruce["Facturación"] / cruce["Matrículas"]).round(0)
+        cruce["% Facturación"] = (cruce["Facturación"] / facturacion * 100).round(2)
+        cruce = cruce.rename(columns={"fuente": "Origen", "pais": "País",
+                                      "tipo_curso": "Tipo de curso"})
+        total = pd.DataFrame([{
+            "Origen": "TOTAL", "País": "", "Tipo de curso": "",
+            "Matrículas": int(cruce["Matrículas"].sum()),
+            "Facturación": float(cruce["Facturación"].sum()),
+            "Ticket medio": round(cruce["Facturación"].sum() / cruce["Matrículas"].sum(), 0),
+            "% Facturación": round(cruce["Facturación"].sum() / facturacion * 100, 2),
+        }])
+        cruce_show = pd.concat([cruce, total], ignore_index=True)
+        st.dataframe(
+            cruce_show.style
+                .background_gradient(subset=["Matrículas"], cmap="Blues")
+                .background_gradient(subset=["Facturación"], cmap="YlOrBr")
+                .format({"Facturación": "{:,.0f} €", "Ticket medio": "{:,.0f} €",
+                         "% Facturación": "{:.2f}%"}),
+            use_container_width=True, hide_index=True, height=460,
+        )
+        st.caption(f"{len(cruce)} combinaciones de origen × país × tipo.")
+        st.download_button(
+            "⬇️ Descargar cruce completo (CSV)",
+            data=cruce_show.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"ventas_cruce_origen_pais_tipo_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_ventas_cruce",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. Ranking de programas
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🏆 Ranking de programas")
+    st.caption("Agrupado por **código de programa** cuando existe (unifica las "
+               "variantes de idioma: `CE_0040_ES` y `CE_0040_EN` son el mismo "
+               "programa); si no hay código, por nombre del producto.")
+
+    dr = dv.copy()
+    dr["_clave"] = dr.apply(
+        lambda r: r["cod_base"] if r["cod_base"] else r["producto"], axis=1)
+    rank = (dr.groupby("_clave")
+            .agg(Matrículas=("deal_id", "count"),
+                 Facturación=("importe", "sum"),
+                 Tipo=("tipo_curso", lambda s: s.mode().iat[0] if not s.mode().empty else "Otros"),
+                 Programa=("producto", lambda s: s.mode().iat[0] if not s.mode().empty else ""))
+            .reset_index())
+    rank["Ticket medio"] = (rank["Facturación"] / rank["Matrículas"]).round(0)
+    rank["% Facturación"] = (rank["Facturación"] / facturacion * 100).round(1)
+    rank["Código"] = rank["_clave"].where(rank["_clave"].str.contains("_", regex=False), "—")
+
+    _n_top = st.slider("Nº de programas en el ranking", 5, 40, 15, key="ventas_top_prog")
+
+    r1, r2 = st.tabs(["🎓 Por matrículas", "💶 Por facturación"])
+    for tab, col, cmap, color in [(r1, "Matrículas", "Blues", BARCA["blue"]),
+                                  (r2, "Facturación", "YlOrBr", BARCA["gold"])]:
+        with tab:
+            top = rank.sort_values(col, ascending=False).head(_n_top).copy()
+            top["_lbl"] = top.apply(
+                lambda r: (f"{r['Código']} · " if r["Código"] != "—" else "")
+                          + str(r["Programa"])[:52], axis=1)
+            fig = px.bar(top.sort_values(col), x=col, y="_lbl", orientation="h",
+                         text=col, title=f"Top {len(top)} programas por {col.lower()}",
+                         color="Tipo", color_discrete_map=_COLOR_TIPO,
+                         category_orders={"Tipo": _tipos_pres}, labels={"_lbl": ""})
+            fig.update_traces(texttemplate=("%{text:,.0f} €" if col == "Facturación"
+                                            else "%{text:,.0f}"))
+            fig.update_layout(legend=dict(orientation="h", y=-0.18, title=""),
+                              yaxis=dict(categoryorder="total ascending"))
+            barca_layout(fig, max(420, len(top) * 30 + 140))
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(
+                top[["Código", "Programa", "Tipo", "Matrículas", "Facturación",
+                     "Ticket medio", "% Facturación"]]
+                .style.background_gradient(subset=["Matrículas"], cmap="Blues")
+                .background_gradient(subset=["Facturación"], cmap="YlOrBr")
+                .format({"Facturación": "{:,.0f} €", "Ticket medio": "{:,.0f} €",
+                         "% Facturación": "{:.1f}%"}),
+                use_container_width=True, hide_index=True,
+                height=min(600, len(top) * 36 + 40),
+                column_config={"Programa": st.column_config.TextColumn(width="large")},
+            )
+
+    st.download_button(
+        "⬇️ Descargar ranking completo (CSV)",
+        data=(rank.sort_values("Facturación", ascending=False)
+              [["Código", "Programa", "Tipo", "Matrículas", "Facturación",
+                "Ticket medio", "% Facturación"]]
+              .to_csv(index=False, encoding="utf-8-sig")),
+        file_name=f"ranking_programas_{fi}_{ff}.csv",
+        mime="text/csv", key="dl_ventas_ranking",
+    )
+
+    with st.expander("📋 Ver detalle de todas las ventas"):
+        det = (dv[["fecha_cierre", "cod_producto", "producto", "tipo_curso",
+                   "pais", "mercado", "fuente", "importe"]]
+               .rename(columns={"fecha_cierre": "Fecha de cierre",
+                                "cod_producto": "Código", "producto": "Programa",
+                                "tipo_curso": "Tipo", "pais": "País",
+                                "mercado": "Mercado", "fuente": "Origen",
+                                "importe": "Importe (€)"})
+               .sort_values("Fecha de cierre", ascending=False))
+        st.dataframe(det, use_container_width=True, hide_index=True, height=460,
+                     column_config={"Importe (€)": st.column_config.NumberColumn(format="%.0f €")})
+        st.download_button(
+            "⬇️ Descargar detalle de ventas (CSV)",
+            data=det.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"ventas_detalle_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_ventas_detalle",
+        )
+
+    st.markdown(
+        f"<br><div style='text-align:center;color:{BARCA['ink40']};font-size:12px'>"
+        f"{ACCOUNT_NAME} · Ventas Low Ticket por producto · Datos actualizados "
+        f"automáticamente cada 5 min</div>",
+        unsafe_allow_html=True
+    )
+
+
 def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
     """Página de análisis de leads: origen, fuente y campaña por programa."""
     st.markdown("## 🧲 Análisis de Leads — origen y campaña")
@@ -2646,6 +3233,17 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
     if not df_ganados_prog_f.empty and "pgm" in df_ganados_prog_f.columns:
         df_ganados_prog_f["prog_pgm"] = df_ganados_prog_f["pgm"].apply(_prog_label)
 
+    # "¿Tiene programa identificado?" se decide por el CÓDIGO, no por el nombre.
+    # El nombre sale de `mail_programa_interes` del contacto y en Low Ticket casi
+    # nunca está relleno; el código sí (viene en el propio negocio). Usar el
+    # nombre dejaba fuera ~84 % de las ventas de estas pestañas.
+    def _con_programa(frame):
+        if frame.empty:
+            return frame
+        if "pgm" in frame.columns:
+            return frame[frame["pgm"].fillna("").str.strip() != ""]
+        return frame[frame.get("programa", "") != "Sin programa"]
+
     _tab1, _tab2, _tab3, _tab4 = st.tabs(["📊 Tabla de conversión", "🌍 Por mercado y país", "📡 Por fuente", "🗺️ Programa × País"])
 
     # ── Tab 1: Tabla principal de conversión ─────────────────────────────────
@@ -2718,13 +3316,13 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
             # Por mercado
             st.markdown("#### Por mercado")
             leads_m = (
-                df_leads_prog[df_leads_prog["programa"] != "Sin programa"]
+                _con_programa(df_leads_prog)
                 .groupby("mercado").size().reset_index(name="Leads")
             ) if not df_leads_prog.empty else pd.DataFrame(columns=["mercado", "Leads"])
 
             if not df_ganados_prog_f.empty:
                 mat_m = (
-                    df_ganados_prog_f[df_ganados_prog_f["programa"] != "Sin programa"]
+                    _con_programa(df_ganados_prog_f)
                     .groupby("mercado").size().reset_index(name="Ventas")
                 )
             else:
@@ -2759,13 +3357,13 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
             # Top países con conversión
             st.markdown("#### Por país (top 20)")
             leads_p = (
-                df_leads_prog[df_leads_prog["programa"] != "Sin programa"]
+                _con_programa(df_leads_prog)
                 .groupby("pais").size().reset_index(name="Leads")
             ) if not df_leads_prog.empty else pd.DataFrame(columns=["pais", "Leads"])
 
             if not df_ganados_prog_f.empty:
                 mat_p = (
-                    df_ganados_prog_f[df_ganados_prog_f["programa"] != "Sin programa"]
+                    _con_programa(df_ganados_prog_f)
                     .groupby("pais").size().reset_index(name="Ventas")
                 )
             else:
@@ -2795,13 +3393,13 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
             st.info("Sin datos.")
         else:
             leads_f = (
-                df_leads_prog[df_leads_prog["programa"] != "Sin programa"]
+                _con_programa(df_leads_prog)
                 .groupby("fuente").size().reset_index(name="Leads")
             ) if not df_leads_prog.empty else pd.DataFrame(columns=["fuente", "Leads"])
 
             if not df_ganados_prog_f.empty:
                 mat_f = (
-                    df_ganados_prog_f[df_ganados_prog_f["programa"] != "Sin programa"]
+                    _con_programa(df_ganados_prog_f)
                     .groupby("fuente").size().reset_index(name="Ventas")
                 )
             else:

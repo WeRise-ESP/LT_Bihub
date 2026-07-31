@@ -26,7 +26,19 @@ pídelo por el gestor de contraseñas del equipo).
 
 ## Reglas de negocio
 - Los contactos se filtran por la propiedad **`pgm`** (prefijos `P_`, `CE_`, `C_`).
-  Los prefijos de High Ticket (`EP_`, `PG_`, `M_`) NO entran aquí.
+  Los prefijos de High Ticket (`EP_`, `PG_`, `M_`) NO entran aquí como leads,
+  pero sí aparecen en algunos pedidos de WooCommerce (ver más abajo).
+- **Qué es cada prefijo** (verificado contra los nombres reales de los productos
+  en los line items — no te fíes de la intuición):
+
+  | Prefijo | Producto | Ejemplo |
+  |---|---|---|
+  | `CE_` | **Certificado** | `CE_0009_EN` → *Certificate in Sports Cardiology* |
+  | `P_` | **Diploma** | `P_0007_EN` → *Professional Diploma in Digital Marketing…* |
+  | `C_` | **Curso** | `C_0167_EN` → *Course of Assessment Methods…* |
+
+  ⚠️ `P_` es **Diploma**, no "Programa". Estuvo mal etiquetado en la primera
+  versión del dashboard.
 - El estado del lead sale de **`lt_lead_status`**, no de `hs_lead_status`. Su
   embudo es: Nuevo → Primera respuesta automatizada → Conversación iniciada →
   Negocio abierto → Negocio ganado. **No tiene estados de descarte**, así que la
@@ -53,17 +65,42 @@ se contarían dos veces los pedidos del solape (feb–abr 2026). **Si el corte r
 cambia, mueve solo esa constante** — está en `dashboard_lt.py` y en los
 `informe_lt*.py`.
 
-## ⚠️ Limitación conocida: atribución lead → venta
-Buena parte de los pedidos de WooCommerce **no enlazan con un contacto que tenga
-`pgm`**: en un muestreo de 60 pedidos Completed, 31 (53 %) tenían el contacto sin
-`pgm` y 13 lo tenían con prefijo de High Ticket. Consecuencia práctica:
+## 🔑 El producto vendido sale del NEGOCIO, no del contacto
+Regla importante y poco obvia. El `pgm` del **contacto** solo está relleno en
+~40 % de los pedidos, así que **no sirve** para saber qué se ha vendido. El dato
+bueno está en el propio negocio:
 
-- Los KPIs de **ventas** (que salen del pipeline) son correctos.
-- La **conversión por programa** y las tablas de campaña infra-atribuyen: en
-  junio de 2026, 372 de 445 negocios ganados quedaron como "Sin programa".
+1. **`codigo_del_producto`** — en WooCommerce trae el código pgm directamente
+   (`CE_0009_EN`, `P_0007_EN`): **99 % relleno**. En el pipeline histórico trae
+   un id numérico de producto de HubSpot, que no sirve.
+2. **Nombre del producto**, vía los **line items** del negocio (`name` + `hs_sku`).
+   Es lo que salva al pipeline histórico, cuyo `dealname` ya lleva el nombre del
+   curso (`"Professional Diploma in X - email@dominio"`), mientras que el de Woo
+   es solo el número de pedido (`"#15497 Chloe Thompson"`).
+3. El `pgm` del contacto, ya solo como último recurso.
 
-No es un bug del dashboard, es un hueco de datos en el CRM. Si se quiere cerrar,
-hay que rellenar `pgm` (o `curso`) en los contactos que compran por WooCommerce.
+Eso es lo que hacen `codigo_producto()`, `tipo_producto()` y
+`fetch_ventas_detalle()`. Con esta cadena la atribución por programa pasó del
+**17 % al 91 %**. **No vuelvas a atribuir ventas por el `pgm` del contacto.**
+
+## ⚠️ Bug del 207 (ojo, está también en el dashboard de High Ticket)
+`hs_post()` daba por bueno **solo el HTTP 200**. Los endpoints `batch/read`
+devuelven **207 (Multi-Status)** cuando alguno de los inputs falla — por ejemplo
+un negocio sin contacto asociado, que es normalísimo. Al no ser 200 ni 429 ni
+5xx, `raise_for_status()` no hacía nada, el bucle agotaba los 5 reintentos y
+lanzaba `RuntimeError`, que el `except Exception: pass` del batch se tragaba
+**entero**: un solo negocio huérfano dejaba sin país, fuente ni programa a los
+otros 99 del lote.
+
+Con el arreglo (aceptar cualquier 2xx) la cobertura de país y origen en los
+negocios pasó del **22 % al 99 %**. `bihub-rst-dashboard` tiene el mismo código
+y por tanto el mismo bug: **conviene replicar el arreglo allá**.
+
+## ⚠️ Ventas de High Ticket por el canal de Low Ticket
+Por WooCommerce se venden también productos `EP_` / `PG_` / `M_`. No son
+despreciables: en junio de 2026 fueron el **30 % de la facturación** (Postgrado
+14,5 % + Máster 11,8 % + Executive Programme 3,7 %). La página de Ventas los
+etiqueta como `(HT)` y los muestra aparte para que no se mezclen con Low Ticket.
 
 ## Otras notas
 - **Batches de HubSpot: máximo 100 inputs** por llamada (400 con más).
