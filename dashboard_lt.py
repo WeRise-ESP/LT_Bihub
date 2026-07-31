@@ -2942,7 +2942,70 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
     _cruce("canal", "Canal", "canal", orden=_canales_pres)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 3. Por país y tipo de curso
+    # 3. Por fuente de tráfico ORIGINAL y tipo de curso
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 📡 Contactos por fuente de tráfico original y tipo de curso")
+    _n_orig = int((dc["origen_fuente"] == "Original").sum())
+    st.caption(
+        f"**Fuente original** (`hs_analytics_source`): de dónde vino el contacto "
+        f"la primera vez, no la última. Es distinta del **canal**, que es el "
+        f"formulario por el que entró. "
+        f"{_n_orig} de {n_con} contactos ({_n_orig/n_con*100:.0f} %) tienen fuente "
+        f"original propia; el resto hereda la más reciente."
+    )
+    _cruce("fuente_original", "Fuente original", "fuente_original")
+
+    # Campañas de la fuente original
+    st.markdown("#### 🏷️ Campañas de origen")
+    st.caption("El drill-down de la fuente original: qué campaña concreta trajo "
+               "al contacto. En Meta es el nombre del conjunto de anuncios.")
+    _camp = dc[dc["camp_original"] != "Sin campaña"]
+    if _camp.empty:
+        st.info("No hay campañas identificadas en la fuente original.")
+    else:
+        _n_camp = st.slider("Nº de campañas a mostrar", 5, 40, 15,
+                            key="contactos_top_camp")
+        tc = (_camp.groupby(["camp_original", "fuente_original"])
+              .agg(Contactos=("email", "count"),
+                   Activados=("lead_activado", lambda s: int((s == "Activado").sum())))
+              .reset_index())
+        tc["% Activación"] = (tc["Activados"] / tc["Contactos"] * 100).round(1)
+        tc["% del total"] = (tc["Contactos"] / n_con * 100).round(1)
+        tc = (tc.rename(columns={"camp_original": "Campaña",
+                                 "fuente_original": "Fuente original"})
+              .sort_values("Contactos", ascending=False))
+        top_c = tc.head(_n_camp)
+
+        fig = px.bar(top_c.sort_values("Contactos"), x="Contactos", y="Campaña",
+                     orientation="h", text="Contactos",
+                     title=f"Top {len(top_c)} campañas de origen",
+                     color="Fuente original", color_discrete_sequence=COLOR_FUENTES)
+        fig.update_layout(legend=dict(orientation="h", y=-0.18, title="", font_size=9),
+                          yaxis=dict(categoryorder="total ascending"))
+        barca_layout(fig, max(420, len(top_c) * 30 + 150))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(
+            top_c[["Campaña", "Fuente original", "Contactos", "% del total",
+                   "Activados", "% Activación"]]
+            .style.background_gradient(subset=["Contactos"], cmap="Blues")
+            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+            .format({"% Activación": "{:.1f}%", "% del total": "{:.1f}%"}),
+            use_container_width=True, hide_index=True,
+            height=min(600, len(top_c) * 36 + 40),
+            column_config={"Campaña": st.column_config.TextColumn(width="large")},
+        )
+        st.download_button(
+            "⬇️ Descargar campañas de origen (CSV)",
+            data=tc.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"contactos_campanas_origen_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_contactos_camp",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. Por país y tipo de curso
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
@@ -2951,18 +3014,18 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
     _cruce("pais", "País", "pais", top=_top_pais)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 4. Canal × origen de tráfico (aquí es donde se ve la IA)
+    # 5. Canal × fuente original (aquí es donde se ve la IA)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
-    st.markdown("### 🤖 Canal de entrada × origen de tráfico")
+    st.markdown("### 🤖 Canal de entrada × fuente de tráfico original")
     st.caption(
-        "El **canal** es por dónde rellenó el formulario; el **origen** es de dónde "
-        "venía. Son cosas distintas: las **Referencias de la IA** (ChatGPT y "
-        "similares) son un origen de tráfico, no un canal — llegan a la web y "
+        "El **canal** es por dónde rellenó el formulario; la **fuente original** es "
+        "de dónde venía. Son cosas distintas: las **Referencias de la IA** (ChatGPT y "
+        "similares) son una fuente de tráfico, no un canal — llegan a la web y "
         "entran por el formulario normal."
     )
-    piv_cf = dc.pivot_table(index="canal", columns="fuente", values="email",
+    piv_cf = dc.pivot_table(index="canal", columns="fuente_original", values="email",
                             aggfunc="count", fill_value=0)
     piv_cf.columns.name = None
     piv_cf.insert(0, "TOTAL", piv_cf.sum(axis=1))
@@ -2971,51 +3034,56 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
     st.dataframe(piv_cf.style.background_gradient(cmap="Blues").format("{:,.0f}"),
                  use_container_width=True,
                  height=min(500, len(piv_cf) * 36 + 60))
-    _ia = int(dc[dc["fuente"] == "Referencias de la IA"].shape[0])
+    _ia = int(dc[dc["fuente_original"] == "Referencias de la IA"].shape[0])
     if _ia:
-        _por = dc[dc["fuente"] == "Referencias de la IA"]["canal"].value_counts()
+        _por = dc[dc["fuente_original"] == "Referencias de la IA"]["canal"].value_counts()
         st.caption(
             f"🤖 **{_ia} contactos llegaron desde IA** en este período, sobre todo por "
             + ", ".join(f"**{k}** ({v})" for k, v in _por.head(3).items()) + "."
         )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 5. Cruce canal × país × tipo
+    # 6. Cruce canal × fuente original × país × tipo
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
-    st.markdown("### 🔀 Cruce canal × país × tipo de curso")
+    st.markdown("### 🔀 Cruce canal × fuente original × país × tipo de curso")
 
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
     with f1:
         _sanea_estado("cx_canal", _canales_pres, multi=True)
         _sel_c = st.multiselect("Canal", _canales_pres, key="cx_canal")
     with f2:
+        _f = sorted(dc["fuente_original"].dropna().unique())
+        _sanea_estado("cx_fuente", _f, multi=True)
+        _sel_f = st.multiselect("Fuente original", _f, key="cx_fuente")
+    with f3:
         _p = sorted(dc["pais"].dropna().unique())
         _sanea_estado("cx_pais", _p, multi=True)
         _sel_p = st.multiselect("País", _p, key="cx_pais")
-    with f3:
+    with f4:
         _sanea_estado("cx_tipo", _tipos_pres, multi=True)
         _sel_t = st.multiselect("Tipo de curso", _tipos_pres, key="cx_tipo")
 
     dx = dc.copy()
     if _sel_c: dx = dx[dx["canal"].isin(_sel_c)]
+    if _sel_f: dx = dx[dx["fuente_original"].isin(_sel_f)]
     if _sel_p: dx = dx[dx["pais"].isin(_sel_p)]
     if _sel_t: dx = dx[dx["tipo_programa"].isin(_sel_t)]
 
     if dx.empty:
         st.info("No hay contactos con esa combinación.")
     else:
-        cruce = (dx.groupby(["canal", "pais", "tipo_programa"])
+        cruce = (dx.groupby(["canal", "fuente_original", "pais", "tipo_programa"])
                  .agg(Contactos=("email", "count"),
                       Activados=("lead_activado", lambda s: int((s == "Activado").sum())))
                  .reset_index().sort_values("Contactos", ascending=False))
         cruce["% Activación"] = (cruce["Activados"] / cruce["Contactos"] * 100).round(1)
         cruce["% del total"] = (cruce["Contactos"] / n_con * 100).round(2)
-        cruce = cruce.rename(columns={"canal": "Canal", "pais": "País",
-                                      "tipo_programa": "Tipo de curso"})
+        cruce = cruce.rename(columns={"canal": "Canal", "fuente_original": "Fuente original",
+                                      "pais": "País", "tipo_programa": "Tipo de curso"})
         tot = pd.DataFrame([{
-            "Canal": "TOTAL", "País": "", "Tipo de curso": "",
+            "Canal": "TOTAL", "Fuente original": "", "País": "", "Tipo de curso": "",
             "Contactos": int(cruce["Contactos"].sum()),
             "Activados": int(cruce["Activados"].sum()),
             "% Activación": round(cruce["Activados"].sum() / cruce["Contactos"].sum() * 100, 1),
@@ -3029,7 +3097,7 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
                 .format({"% Activación": "{:.1f}%", "% del total": "{:.2f}%"}),
             use_container_width=True, hide_index=True, height=460,
         )
-        st.caption(f"{len(cruce)} combinaciones de canal × país × tipo.")
+        st.caption(f"{len(cruce)} combinaciones de canal × fuente × país × tipo.")
         st.download_button(
             "⬇️ Descargar cruce completo (CSV)",
             data=cruce_show.to_csv(index=False, encoding="utf-8-sig"),
@@ -3038,7 +3106,7 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
         )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 6. Ranking de programas
+    # 7. Ranking de programas
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
