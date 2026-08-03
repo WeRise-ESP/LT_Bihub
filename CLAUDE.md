@@ -42,8 +42,37 @@ pídelo por el gestor de contraseñas del equipo).
 - El estado del lead sale de **`lt_lead_status`**, no de `hs_lead_status`. Su
   embudo es: Nuevo → Primera respuesta automatizada → Conversación iniciada →
   Negocio abierto → Negocio ganado. **No tiene estados de descarte**, así que la
-  clasificación "Válido / No válido" de High Ticket NO aplica: aquí el eje
-  equivalente es **Activado / Sin actividad** (¿el lead salió de "Nuevo"?).
+  clasificación "Válido / No válido" de High Ticket NO aplica.
+
+## ⚠️ "Activado" NO sale de `lt_lead_status`
+Es el error intuitivo y ya se cometió una vez. `clasif_activado()` mira señales
+reales de interés del lead:
+
+- abrió algún email de marketing (`hs_email_open`), o
+- hizo clic en alguno (`hs_email_click`), o
+- tiene actividad comercial anotada (`num_contacted_notes`).
+
+**No vale usar `lt_lead_status` para esto**, por dos razones medidas sobre
+ventanas de ~2.000 contactos:
+
+1. El **~96 % de los contactos recibe el email** de marketing, en todos los
+   períodos. "Haberlo recibido" no discrimina nada, así que un estado de
+   "primera respuesta automatizada" no dice si el lead reaccionó.
+2. Esa propiedad la escribe un workflow que **dejó de dispararse a mediados de
+   junio de 2026**: el % con estado distinto de "Nuevo" cayó del 96,7 % al 0,8 %
+   de una semana a otra, mientras la entrega de emails seguía plana al 95-96 %.
+   Medía si la automatización funcionaba, no el interés del lead.
+
+| Ventana | Métrica vieja (`lt_lead_status`) | Métrica actual | Abrió | Clic | Comercial |
+|---|---:|---:|---:|---:|---:|
+| 2–8 jun 2026 | 96,8 % | 61,3 % | 19,0 % | 3,6 % | 51,4 % |
+| 16–22 jun 2026 | 0,8 % | 12,0 % | 11,5 % | 2,5 % | 1,4 % |
+| 7–13 jul 2026 | 1,0 % | 16,2 % | 15,8 % | 2,5 % | 1,0 % |
+
+La caída de junio sigue ahí (61 % → 12 %), pero ahora se ve **de qué es**: las
+aperturas se mantienen (19 % → 11-16 %) y lo que se desploma es la **actividad
+comercial** (51,4 % → 1,4 %). O sea, a los leads se les sigue mandando correo —
+incluso más que antes— pero dejaron de trabajarse.
 - Las fechas se interpretan en zona horaria **Europe/Madrid** (igual que HubSpot).
 - ⚠️ **Streamlit pinado a 1.57.0** en requirements — 1.58.0 tiene un bug en el
   DownloadButton. No subir la versión sin verificar.

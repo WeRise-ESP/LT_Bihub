@@ -298,6 +298,7 @@ MIN_DATE = "2024-01-01"
 LEAD_COLS = [
     "email", "fecha", "mes", "pgm", "tipo_programa", "pais",
     "lead_status", "lead_activado", "intentos", "curso",
+    "emails_recibidos", "emails_abiertos", "emails_clic",
     "fuente", "origen_fuente", "programa", "mercado",
     # Origen / campaña (análisis de leads)
     "fuente_original", "fuente_reciente",
@@ -343,18 +344,41 @@ ESTADOS_ORDEN = [
     "Primera respuesta automatizada", "Nuevo", "Sin estado",
 ]
 
+# ── Activación del lead ───────────────────────────────────────────────────────
 # Low Ticket no tiene estados de descarte (No válido / Ilocalizado / No interés
-# solo existen en el embudo de High Ticket). El eje equivalente aquí es si el
-# lead llegó a activarse: cualquier estado por encima de "Nuevo" implica que
-# hubo interacción.
-STATUS_ACTIVADO = {
-    "Primera respuesta automatizada", "Conversación iniciada",
-    "Negocio abierto", "Negocio ganado",
-}
+# solo existen en el embudo de High Ticket), así que el eje equivalente es si el
+# lead dio alguna señal real de interés.
+#
+# ⚠️ NO se usa `lt_lead_status` para esto, aunque sea lo intuitivo. Dos razones,
+# ambas medidas sobre ventanas de ~2.000 contactos:
+#   1. El ~96 % de los contactos recibe el email de marketing, así que "haberlo
+#      recibido" no discrimina nada.
+#   2. Esa propiedad la escribe un workflow que dejó de dispararse a mediados de
+#      junio de 2026: el % de contactos con estado distinto de "Nuevo" cayó del
+#      96,7 % al 0,8 % de una semana a otra, mientras la entrega de emails se
+#      mantenía plana en el 95-96 %. Medía si la automatización funcionaba, no
+#      si el lead reaccionaba.
+#
+# Señales que sí son del lead y se mantienen estables en el tiempo:
+#   · abrió algún email de marketing   (hs_email_open)
+#   · hizo clic en algún email          (hs_email_click)
+#   · tiene actividad comercial anotada (num_contacted_notes)
 
 
-def clasif_activado(lead_status: str) -> str:
-    return "Activado" if lead_status in STATUS_ACTIVADO else "Sin actividad"
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def clasif_activado(cp) -> str:
+    """'Activado' si el lead dio alguna señal real de interés."""
+    if (_num(cp.get("hs_email_open")) > 0
+            or _num(cp.get("hs_email_click")) > 0
+            or _num(cp.get("num_contacted_notes")) > 0):
+        return "Activado"
+    return "Sin actividad"
 
 CONTACT_PROPS = [
     "email",
@@ -363,6 +387,8 @@ CONTACT_PROPS = [
     # Estado del embudo Low Ticket. `hs_lead_status` se trae también porque
     # algunos contactos LT vienen del equipo comercial y solo lo tienen ahí.
     "lt_lead_status", "hs_lead_status", "num_contacted_notes",
+    # Señales reales de interés del lead (ver clasif_activado)
+    "hs_email_delivered", "hs_email_open", "hs_email_click",
     "curso", "url_curso_de_interes",
     "hs_analytics_source", "hs_analytics_source_data_1", "hs_analytics_source_data_2",
     "hs_latest_source", "hs_latest_source_data_1", "hs_latest_source_data_2",
@@ -970,8 +996,11 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "tipo_programa":    tipo_programa(pgm_val),
             "pais":             _pais,
             "lead_status":      _estado,
-            "lead_activado":    clasif_activado(_estado),
-            "intentos":         int(cp.get("num_contacted_notes") or 0),
+            "lead_activado":    clasif_activado(cp),
+            "intentos":         int(_num(cp.get("num_contacted_notes"))),
+            "emails_recibidos": int(_num(cp.get("hs_email_delivered"))),
+            "emails_abiertos":  int(_num(cp.get("hs_email_open"))),
+            "emails_clic":      int(_num(cp.get("hs_email_click"))),
             "curso":            (cp.get("curso") or "").strip(),
             "fuente":           fuente,
             "origen_fuente":    origen,
@@ -1634,8 +1663,9 @@ def conclusiones(df, df_mat, df_deals_periodo):
 
     # ── Fuentes con más leads que nunca se activan ────────────────────────────
     st.markdown("### ⚠️ Fuentes con más leads sin activar")
-    st.caption("Un lead 'sin activar' se quedó en **Nuevo** (o sin estado): nunca llegó "
-               "ni a la primera respuesta automatizada.")
+    st.caption("Un lead 'sin activar' no ha dado **ninguna señal de interés**: no ha "
+               "abierto ni clicado ningún email y no tiene actividad comercial "
+               "anotada. Recibir el email no cuenta — lo recibe el ~96 %.")
     if len(inactivos) > 0:
         mq = inactivos.groupby("fuente").size().reset_index(name="Sin_actividad")
         tf = df.groupby("fuente").size().reset_index(name="Total")
@@ -2149,9 +2179,11 @@ def main():
 
     # ── Activación de leads (Activado / Sin actividad) ───────────────────────────
     st.markdown("### Activación de leads")
-    st.caption("Activado = el lead superó el estado 'Nuevo' en `lt_lead_status` "
-               "(primera respuesta, conversación, negocio abierto o ganado). "
-               "Sin actividad = sigue en 'Nuevo' o no tiene estado.")
+    st.caption("Activado = el lead **abrió o clicó** algún email de marketing, o "
+               "tiene **actividad comercial** anotada. No se usa `lt_lead_status`: "
+               "esa propiedad la escribe un workflow que dejó de dispararse a "
+               "mediados de junio de 2026, y además el ~96 % de los contactos "
+               "recibe el email, así que recibirlo no discrimina nada.")
     _COLOR_VALIDO = {"Activado": BARCA["blue"], "Sin actividad": BARCA["garnet"]}
     _n_valido    = int((df["lead_activado"] == "Activado").sum())
     _n_no_valido = int((df["lead_activado"] == "Sin actividad").sum())
@@ -2778,12 +2810,53 @@ def _render_contactos_page(dc, periodo_txt, fi, ff):
     kpi_card(k4, "Programas distintos", n_prog,                         BARCA["blue_deep"])
     st.markdown(
         f"<div style='font-size:12px;color:{BARCA['ink40']};margin-top:6px'>"
-        f"ℹ️ <b>Activado</b> = el lead superó el estado 'Nuevo' en "
-        f"<code>lt_lead_status</code>. De estos contactos, <b>{n_gan}</b> están hoy "
-        f"en <b>Negocio ganado</b>.</div>",
+        f"ℹ️ <b>Activado</b> = el lead <b>abrió o clicó</b> algún email de marketing, "
+        f"o tiene <b>actividad comercial</b> anotada. Recibir el email no cuenta: lo "
+        f"recibe el ~96 % de los contactos. De estos, <b>{n_gan}</b> están hoy en "
+        f"<b>Negocio ganado</b>.</div>",
         unsafe_allow_html=True
     )
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Embudo real de engagement ─────────────────────────────────────────────
+    if "emails_recibidos" in dc.columns:
+        _rec = int((dc["emails_recibidos"] > 0).sum())
+        _abr = int((dc["emails_abiertos"] > 0).sum())
+        _cli = int((dc["emails_clic"] > 0).sum())
+        _com = int((dc["intentos"] > 0).sum())
+        emb = pd.DataFrame({
+            "Etapa": [f"Contactos ({n_con})",
+                      f"Recibió email ({_rec})",
+                      f"Abrió email ({_abr})",
+                      f"Hizo clic ({_cli})",
+                      f"Actividad comercial ({_com})",
+                      f"Negocio ganado ({n_gan})"],
+            "Cantidad": [n_con, _rec, _abr, _cli, _com, n_gan],
+        })
+        c_emb, c_txt = st.columns([1.4, 1])
+        with c_emb:
+            fig = px.funnel(emb, x="Cantidad", y="Etapa",
+                            title="Embudo real de engagement",
+                            color_discrete_sequence=[BARCA["blue"]])
+            barca_layout(fig, 320)
+            st.plotly_chart(fig, use_container_width=True)
+        with c_txt:
+            st.markdown(
+                f"""
+**Por qué el embudo empieza tan plano**
+
+Prácticamente todos los contactos reciben el email de marketing
+(**{_rec/n_con*100:.0f} %**), así que esa etapa no separa a nadie: es el suelo,
+no una señal de interés.
+
+Donde se ve de verdad quién reacciona es a partir de la apertura:
+**{_abr/n_con*100:.1f} %** abre, **{_cli/n_con*100:.1f} %** hace clic y
+**{_com/n_con*100:.1f} %** llega a tener actividad comercial anotada.
+
+Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
+"""
+            )
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # Reparto por canal
     res = (dc.groupby("canal")

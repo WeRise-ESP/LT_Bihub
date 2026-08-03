@@ -107,7 +107,7 @@ Son dos cosas distintas y conviene no confundirlas:
 |---|---|
 | **Leads nuevos** | Contactos con `pgm` = `P_*` / `CE_*` / `C_*`, por `createdate` |
 | **Estado del lead** | `lt_lead_status` (Nuevo → Primera respuesta → Conversación iniciada → Negocio abierto → Negocio ganado) |
-| **Activado / Sin actividad** | ¿El lead superó el estado "Nuevo"? |
+| **Activado / Sin actividad** | ¿Abrió o clicó algún email, o tiene actividad comercial anotada? **No** sale de `lt_lead_status` |
 | **Ventas** | Negocios en **Cierre ganado**, por `closedate` |
 | **Negocios perdidos** | Negocios en etapas de pérdida, por `closedate` |
 | **Facturación** | `amount` del negocio |
