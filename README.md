@@ -76,11 +76,14 @@ git push origin main          # 2) publica → Streamlit Cloud redespliega (~1-3
 
 ## 🧭 Estructura de la app
 
-Cinco páginas (selector "📄 Página" en el panel lateral):
+Seis páginas (selector "📄 Página" en el panel lateral):
 - **📊 Dashboard general** — KPIs, embudo Low Ticket y negocios de venta.
 - **💶 Ventas y Facturación** — resumen ejecutivo (ventas, facturación, ticket medio
   y % de facturación por tipo de curso), matrículas y facturación por origen y por
   país, cruce origen × país × tipo, y ranking de programas.
+- **📅 Semanal y Becas** — matriculaciones y facturación por semana natural y tipo
+  de curso, con la promoción vigente en cada tramo, calendario de becas y
+  comparativa por campaña en media diaria.
 - **📥 Contactos y Canales** — la misma estructura pero de captación: contactos y
   tasa de activación por **canal de entrada** (Facebook Lead Ads, formulario web,
   landing, banner, chatbot…), por país, cruce canal × país × tipo y ranking de

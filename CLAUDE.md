@@ -220,6 +220,20 @@ dimensión de **origen**, no la de canal. En junio de 2026 fueron 40 contactos.
 Tampoco existe un canal "chatbot" como formulario: los del chat entran con
 `hs_object_source_label = CONVERSATIONS` (23 en junio).
 
+## 🎁 Las becas se mantienen A MANO
+Los períodos de promoción **no están en HubSpot**: viven en la constante
+`BECAS` de `dashboard_lt.py`. Cuando entre una nueva, hay que añadirla ahí o la
+página de "Semanal y Becas" no la mostrará. Las fechas son inclusivas por los
+dos extremos.
+
+⚠️ **Pueden solaparse.** New Skills 40 % y Masterclasses 60 % convivieron del 6
+al 19 de julio de 2026. Consecuencia: en la tabla *por beca*, una venta de esos
+días cuenta en las dos, así que la suma por becas **supera** el total del
+período. Las cifras *semanales* sí son exactas (cada venta cuenta una vez).
+
+Compara siempre por **media diaria**, no por total: Stars duró 5 días y New
+Skills 21, y los totales no son comparables.
+
 ## 🗂️ Los nombres de curso salen del catálogo de productos
 Los contactos **no traen el nombre del curso**: `mail_programa_interes` y
 `curso` están casi siempre vacíos en Low Ticket, solo viene el código en `pgm`.

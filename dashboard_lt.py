@@ -1042,6 +1042,32 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── Becas y promociones ───────────────────────────────────────────────────────
+# Períodos de descuento, para poder leer los resultados semanales sabiendo qué
+# promoción estaba activa. Son datos de negocio que no están en HubSpot: hay que
+# mantenerlos a mano aquí. Las fechas son inclusivas por los dos extremos.
+# Ojo: pueden SOLAPARSE (New Skills y Masterclasses convivieron del 6 al 19 de
+# julio), así que un mismo día puede tener más de una beca activa.
+BECAS = [
+    {"nombre": "Stars",         "desc": 40, "desde": "2026-07-01", "hasta": "2026-07-05"},
+    {"nombre": "New Skills",    "desc": 40, "desde": "2026-07-06", "hasta": "2026-07-26"},
+    {"nombre": "Masterclasses", "desc": 60, "desde": "2026-07-06", "hasta": "2026-07-19"},
+    {"nombre": "Pretemporada",  "desc": 50, "desde": "2026-07-27", "hasta": "2026-08-09"},
+]
+
+
+def etiqueta_beca(b: dict) -> str:
+    return f"{b['nombre']} {b['desc']}%"
+
+
+def becas_activas(fecha: str) -> list:
+    """Becas vigentes en una fecha 'YYYY-MM-DD'."""
+    f = (fecha or "")[:10]
+    if not f:
+        return []
+    return [b for b in BECAS if b["desde"] <= f <= b["hasta"]]
+
+
 # ── Pipelines de venta Low Ticket ──────────────────────────────────────────────
 # La operativa de venta migró de "Pipeline de ventas" (el histórico, id `default`)
 # a "WooCommerce Orders" en mayo de 2026: el pipeline antiguo deja de registrar
@@ -2054,8 +2080,8 @@ def main():
         pagina = st.radio(
             "Navegación",
             ["📊 Dashboard general", "💶 Ventas y Facturación",
-             "📥 Contactos y Canales", "🎓 Conversión por Programa",
-             "🧲 Análisis de Leads"],
+             "📅 Semanal y Becas", "📥 Contactos y Canales",
+             "🎓 Conversión por Programa", "🧲 Análisis de Leads"],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -2224,6 +2250,19 @@ def main():
             if filtro_pais:
                 df_ventas = df_ventas[df_ventas["pais"].isin(filtro_pais)]
         _render_ventas_page(df_ventas, periodo_txt, fi, ff)
+        return
+
+    if pagina == "📅 Semanal y Becas":
+        with st.spinner("Cargando el detalle de ventas..."):
+            df_ventas = fetch_ventas_detalle(str(fi), str(ff))
+        if not df_ventas.empty:
+            if filtro_fuente:
+                df_ventas = df_ventas[df_ventas["fuente"].isin(filtro_fuente)]
+            if filtro_mercado:
+                df_ventas = df_ventas[df_ventas["mercado"].isin(filtro_mercado)]
+            if filtro_pais:
+                df_ventas = df_ventas[df_ventas["pais"].isin(filtro_pais)]
+        _render_becas_page(df_ventas, periodo_txt, fi, ff)
         return
 
     if pagina == "📥 Contactos y Canales":
@@ -2902,6 +2941,261 @@ def main():
     st.markdown(
         f"<br><div style='text-align:center;color:{BARCA['ink40']};font-size:12px'>"
         f"{ACCOUNT_NAME} · Contactos Low Ticket por programa (pgm) · Datos actualizados automáticamente cada 5 min</div>",
+        unsafe_allow_html=True
+    )
+
+
+def _render_becas_page(dv, periodo_txt, fi, ff):
+    """Resultados semanales por tipo de curso, con la beca activa cada semana."""
+    st.markdown("## 📅 Resultados semanales y becas")
+    st.caption(
+        f"📅 {periodo_txt} · Matriculaciones y facturación por **semana natural** "
+        f"(lunes a domingo) y **tipo de curso**, con la promoción vigente en cada "
+        f"tramo. Los períodos de beca se mantienen a mano en la constante "
+        f"`BECAS` del código, porque no están en HubSpot."
+    )
+
+    if dv.empty:
+        st.info("No hay ventas en el período y filtros seleccionados.")
+        return
+
+    _ORDEN_TIPO = list(TIPO_PROGRAMA.values()) + ["Otros"]
+    _tipos = [t for t in _ORDEN_TIPO if t in set(dv["tipo_curso"])]
+    _COLOR_TIPO = {"Certificado": BARCA["blue"], "Diploma": BARCA["gold"],
+                   "Curso": BARCA["yellow"], "Otros": BARCA["ink40"]}
+
+    def _eur(x):
+        return f"{x:,.0f} €".replace(",", ".")
+
+    d = dv.copy()
+    d["_f"] = pd.to_datetime(d["fecha_cierre"], errors="coerce")
+    d = d.dropna(subset=["_f"])
+    if d.empty:
+        st.info("Las ventas del período no tienen fecha de cierre utilizable.")
+        return
+    d["_sem"] = d["_f"].dt.to_period("W-SUN").dt.start_time
+    d["Semana"] = d["_sem"].dt.strftime("%d/%m")
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_card(k1, "Matriculaciones", f"{len(d):,}".replace(",", "."), BARCA["blue"])
+    kpi_card(k2, "Facturación",     _eur(d["importe"].sum()),        BARCA["gold"])
+    kpi_card(k3, "Ticket medio",    _eur(d["importe"].mean()),       BARCA["garnet"])
+    kpi_card(k4, "Semanas",         d["_sem"].nunique(),             BARCA["blue_deep"])
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Calendario de becas del período ───────────────────────────────────────
+    _ini, _fin = d["_f"].min(), d["_f"].max()
+    _becas_periodo = [b for b in BECAS
+                      if pd.Timestamp(b["desde"]) <= _fin
+                      and pd.Timestamp(b["hasta"]) >= _ini]
+    if _becas_periodo:
+        st.markdown("### 🗓️ Calendario de becas")
+        gantt = pd.DataFrame([{
+            "Beca": etiqueta_beca(b),
+            "Inicio": pd.Timestamp(b["desde"]),
+            # +1 día para que la barra incluya el último día
+            "Fin": pd.Timestamp(b["hasta"]) + pd.Timedelta(days=1),
+        } for b in _becas_periodo])
+        fig = px.timeline(gantt, x_start="Inicio", x_end="Fin", y="Beca", color="Beca",
+                          title="Períodos de promoción",
+                          color_discrete_sequence=[BARCA["garnet"], BARCA["gold"],
+                                                   BARCA["blue"], BARCA["blue_deep"],
+                                                   BARCA["yellow"], BARCA["ink60"]])
+        fig.update_yaxes(autorange="reversed", title="")
+        fig.update_layout(showlegend=False)
+        barca_layout(fig, max(220, len(gantt) * 52 + 120))
+        st.plotly_chart(fig, use_container_width=True)
+        _solapan = [b for b in _becas_periodo
+                    if sum(1 for o in _becas_periodo
+                           if o is not b and o["desde"] <= b["hasta"] and o["hasta"] >= b["desde"])]
+        if _solapan:
+            st.caption(
+                "⚠️ Hay becas **solapadas** (New Skills y Masterclasses convivieron "
+                "del 6 al 19 de julio). En la tabla por beca de más abajo, una venta "
+                "de esos días cuenta en las dos, así que la suma por becas supera el "
+                "total del período. Las cifras semanales sí son exactas."
+            )
+
+    # ── Tabla semanal por tipo de curso ───────────────────────────────────────
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 📊 Semana × tipo de curso")
+
+    def _becas_de_semana(lunes):
+        dias = pd.date_range(lunes, lunes + pd.Timedelta(days=6))
+        act = []
+        for b in BECAS:
+            solap = [x for x in dias
+                     if b["desde"] <= x.strftime("%Y-%m-%d") <= b["hasta"]]
+            if solap:
+                act.append(f"{etiqueta_beca(b)} ({len(solap)}d)")
+        return " · ".join(act) or "—"
+
+    piv_n = d.pivot_table(index="_sem", columns="tipo_curso", values="deal_id",
+                          aggfunc="count", fill_value=0)
+    piv_e = d.pivot_table(index="_sem", columns="tipo_curso", values="importe",
+                          aggfunc="sum", fill_value=0.0)
+    for p in (piv_n, piv_e):
+        p.columns.name = None
+    cols_t = [t for t in _tipos if t in piv_n.columns]
+    piv_n = piv_n.reindex(columns=cols_t, fill_value=0).sort_index()
+    piv_e = piv_e.reindex(index=piv_n.index, columns=cols_t, fill_value=0.0)
+
+    base = pd.DataFrame({
+        "Semana": [i.strftime("%d/%m/%Y") for i in piv_n.index],
+        "Beca vigente": [_becas_de_semana(i) for i in piv_n.index],
+    }, index=piv_n.index)
+
+    tab_n = base.join(piv_n)
+    tab_n["TOTAL"] = piv_n.sum(axis=1)
+    tab_e = base.join(piv_e.round(0))
+    tab_e["TOTAL"] = piv_e.sum(axis=1).round(0)
+
+    t1, t2 = st.tabs(["🎓 Matriculaciones", "💶 Facturación"])
+    with t1:
+        st.dataframe(
+            tab_n.reset_index(drop=True).style
+                .background_gradient(subset=cols_t + ["TOTAL"], cmap="Blues")
+                .format({c: "{:,.0f}" for c in cols_t + ["TOTAL"]}),
+            use_container_width=True, hide_index=True,
+            height=min(560, len(tab_n) * 36 + 60),
+            column_config={"Beca vigente": st.column_config.TextColumn(width="large")},
+        )
+    with t2:
+        st.dataframe(
+            tab_e.reset_index(drop=True).style
+                .background_gradient(subset=cols_t + ["TOTAL"], cmap="YlOrBr")
+                .format({c: "{:,.0f} €" for c in cols_t + ["TOTAL"]}),
+            use_container_width=True, hide_index=True,
+            height=min(560, len(tab_e) * 36 + 60),
+            column_config={"Beca vigente": st.column_config.TextColumn(width="large")},
+        )
+
+    largo = (d.groupby(["Semana", "_sem", "tipo_curso"])
+             .agg(Matriculaciones=("deal_id", "count"), Facturación=("importe", "sum"))
+             .reset_index().sort_values("_sem"))
+    orden_sem = [i.strftime("%d/%m") for i in piv_n.index]
+    g1, g2 = st.columns(2)
+    with g1:
+        fig = px.bar(largo, x="Semana", y="Matriculaciones", color="tipo_curso",
+                     barmode="stack", title="Matriculaciones por semana y tipo",
+                     color_discrete_map=_COLOR_TIPO,
+                     category_orders={"Semana": orden_sem, "tipo_curso": _tipos})
+        fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""), xaxis_title="")
+        barca_layout(fig, 380)
+        st.plotly_chart(fig, use_container_width=True)
+    with g2:
+        fig = px.bar(largo, x="Semana", y="Facturación", color="tipo_curso",
+                     barmode="stack", title="Facturación por semana y tipo",
+                     color_discrete_map=_COLOR_TIPO,
+                     category_orders={"Semana": orden_sem, "tipo_curso": _tipos})
+        fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""),
+                          xaxis_title="", yaxis_title="€")
+        barca_layout(fig, 380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.download_button(
+        "⬇️ Descargar semana × tipo (CSV)",
+        data=tab_e.join(tab_n[cols_t + ["TOTAL"]], lsuffix=" €", rsuffix=" matr.")
+                  .reset_index(drop=True).to_csv(index=False, encoding="utf-8-sig"),
+        file_name=f"semanal_becas_{fi}_{ff}.csv",
+        mime="text/csv", key="dl_becas_semana",
+    )
+
+    # ── Resultados por beca ───────────────────────────────────────────────────
+    st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                unsafe_allow_html=True)
+    st.markdown("### 🎁 Resultados por beca")
+    st.caption("Se compara la **media diaria**, no el total: las promociones duran "
+               "distinto (Stars 5 días, New Skills 21) y los totales no son "
+               "comparables entre sí.")
+
+    filas, por_tipo = [], []
+    for b in _becas_periodo:
+        ini, fin = pd.Timestamp(b["desde"]), pd.Timestamp(b["hasta"])
+        sub = d[(d["_f"] >= ini) & (d["_f"] <= fin)]
+        # Días con datos reales: una beca en curso aún no ha terminado
+        dias = max(1, (min(fin, _fin) - max(ini, _ini)).days + 1)
+        filas.append({
+            "Beca": etiqueta_beca(b),
+            "Desde": ini.strftime("%d/%m/%Y"),
+            "Hasta": fin.strftime("%d/%m/%Y"),
+            "Días con datos": dias,
+            "Matriculaciones": len(sub),
+            "Facturación": float(sub["importe"].sum()),
+            "Ticket medio": float(sub["importe"].mean()) if len(sub) else 0.0,
+            "Matr./día": round(len(sub) / dias, 1),
+            "€/día": round(float(sub["importe"].sum()) / dias, 0),
+        })
+        for t, g in sub.groupby("tipo_curso"):
+            por_tipo.append({"Beca": etiqueta_beca(b), "Tipo": t,
+                             "Matriculaciones": len(g),
+                             "Facturación": float(g["importe"].sum())})
+
+    if not filas:
+        st.info("Ninguna beca cae dentro del período seleccionado.")
+    else:
+        tb = pd.DataFrame(filas)
+        st.dataframe(
+            tb.style
+              .background_gradient(subset=["Matr./día"], cmap="Blues")
+              .background_gradient(subset=["€/día"], cmap="YlOrBr")
+              .format({"Facturación": "{:,.0f} €", "Ticket medio": "{:,.0f} €",
+                       "€/día": "{:,.0f} €", "Matr./día": "{:.1f}"}),
+            use_container_width=True, hide_index=True,
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            fig = px.bar(tb.sort_values("Matr./día"), x="Matr./día", y="Beca",
+                         orientation="h", text="Matr./día",
+                         title="Matriculaciones por día de campaña",
+                         color_discrete_sequence=[BARCA["blue"]])
+            fig.update_traces(texttemplate="%{text:.1f}")
+            fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+            barca_layout(fig, max(300, len(tb) * 52 + 120))
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            fig = px.bar(tb.sort_values("€/día"), x="€/día", y="Beca",
+                         orientation="h", text="€/día",
+                         title="Facturación por día de campaña",
+                         color_discrete_sequence=[BARCA["gold"]])
+            fig.update_traces(texttemplate="%{text:,.0f} €")
+            fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+            barca_layout(fig, max(300, len(tb) * 52 + 120))
+            st.plotly_chart(fig, use_container_width=True)
+
+        if por_tipo:
+            st.markdown("#### Beca × tipo de curso")
+            pt = pd.DataFrame(por_tipo)
+            pn = pt.pivot_table(index="Beca", columns="Tipo", values="Matriculaciones",
+                                aggfunc="sum", fill_value=0)
+            pe = pt.pivot_table(index="Beca", columns="Tipo", values="Facturación",
+                                aggfunc="sum", fill_value=0.0)
+            for p in (pn, pe):
+                p.columns.name = None
+            pn.insert(0, "TOTAL", pn.sum(axis=1))
+            pe.insert(0, "TOTAL", pe.sum(axis=1))
+            b1, b2 = st.tabs(["🎓 Matriculaciones", "💶 Facturación"])
+            with b1:
+                st.dataframe(pn.style.background_gradient(cmap="Blues").format("{:,.0f}"),
+                             use_container_width=True)
+            with b2:
+                st.dataframe(pe.style.background_gradient(cmap="YlOrBr").format("{:,.0f} €"),
+                             use_container_width=True)
+
+        st.download_button(
+            "⬇️ Descargar resultados por beca (CSV)",
+            data=tb.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"resultados_por_beca_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_becas_resumen",
+        )
+
+    st.markdown(
+        f"<br><div style='text-align:center;color:{BARCA['ink40']};font-size:12px'>"
+        f"{ACCOUNT_NAME} · Resultados semanales y becas · Datos actualizados "
+        f"automáticamente cada 5 min</div>",
         unsafe_allow_html=True
     )
 
