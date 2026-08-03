@@ -2858,6 +2858,63 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
             )
         st.markdown("<br>", unsafe_allow_html=True)
 
+    # ── Reparto por tipo de programa ──────────────────────────────────────────
+    st.markdown("### 🧩 Reparto por tipo de programa")
+    st.caption("El tipo sale del prefijo del código `pgm` del contacto: "
+               "`CE_` Certificado · `P_` Diploma · `C_` Curso.")
+
+    tp = (dc.groupby("tipo_programa")
+          .agg(Contactos=("email", "count"),
+               Activados=("lead_activado", lambda s: int((s == "Activado").sum())),
+               Ganados=("lead_status", lambda s: int((s == "Negocio ganado").sum())))
+          .reindex(_tipos_pres).fillna(0).reset_index())
+    tp[["Contactos", "Activados", "Ganados"]] = tp[["Contactos", "Activados", "Ganados"]].astype(int)
+    tp["% Contactos"] = (tp["Contactos"] / n_con * 100).round(1)
+    tp["% Activación"] = (tp["Activados"] / tp["Contactos"].replace(0, pd.NA) * 100).round(1)
+    tp["% Conversión"] = (tp["Ganados"] / tp["Contactos"].replace(0, pd.NA) * 100).round(2)
+
+    _fichas_t = tp.head(6)
+    cols_t = st.columns(len(_fichas_t))
+    for col, (_, r) in zip(cols_t, _fichas_t.iterrows()):
+        kpi_card(col, f"% {r['tipo_programa']}", f"{r['% Contactos']:.1f}%",
+                 _COLOR_TIPO.get(r["tipo_programa"], BARCA["ink60"]))
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    t1, t2 = st.columns([1, 1.3])
+    with t1:
+        fig = px.pie(tp, names="tipo_programa", values="Contactos",
+                     title="Reparto de contactos por tipo de programa", hole=0.55,
+                     color="tipo_programa", color_discrete_map=_COLOR_TIPO,
+                     category_orders={"tipo_programa": _tipos_pres})
+        fig.update_traces(textposition="outside", textinfo="percent+label",
+                          marker=dict(line=dict(color=BARCA["white"], width=2)))
+        barca_layout(fig, 360)
+        st.plotly_chart(fig, use_container_width=True)
+    with t2:
+        st.dataframe(
+            tp.rename(columns={"tipo_programa": "Tipo de programa",
+                               "Ganados": "Negocio ganado"})
+            [["Tipo de programa", "Contactos", "% Contactos", "Activados",
+              "% Activación", "Negocio ganado", "% Conversión"]]
+            .style.background_gradient(subset=["Contactos"], cmap="Blues")
+            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+            .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                     "Negocio ganado": "{:,.0f}", "% Contactos": "{:.1f}%",
+                     "% Activación": "{:.1f}%", "% Conversión": "{:.2f}%"}),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption("**% Conversión** = contactos del período que hoy están en "
+                   "'Negocio ganado'. Es conversión del lead, no de la venta: "
+                   "las cifras de facturación están en la página de Ventas.")
+        st.download_button(
+            "⬇️ Descargar reparto por tipo (CSV)",
+            data=tp.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"contactos_por_tipo_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_contactos_tipo",
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # Reparto por canal
     res = (dc.groupby("canal")
            .agg(Contactos=("email", "count"),
