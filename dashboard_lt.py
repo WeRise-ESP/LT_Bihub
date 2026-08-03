@@ -3092,8 +3092,32 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
     st.caption("El drill-down de la fuente original: qué campaña concreta trajo "
                "al contacto. En Meta es el nombre del conjunto de anuncios.")
     _camp = dc[dc["camp_original"] != "Sin campaña"]
+
+    # Filtros de la sección. Se llaman distinto a propósito: "fuente de tráfico"
+    # es de dónde venía (redes, búsqueda de pago…) y "canal de entrada" es el
+    # formulario por el que entró (Lead Ads, web, landing…).
+    cf1, cf2, cf3 = st.columns([1.2, 1.2, 1])
+    with cf1:
+        _f_opts = sorted(_camp["fuente_original"].dropna().unique()) if not _camp.empty else []
+        _sanea_estado("camp_fuente", _f_opts, multi=True)
+        _f_sel = st.multiselect("Fuente de tráfico", _f_opts, key="camp_fuente",
+                                placeholder="Todas las fuentes")
+    with cf2:
+        _c_opts = [c for c in _canales_pres if c in set(_camp["canal"])] if not _camp.empty else []
+        _sanea_estado("camp_canal", _c_opts, multi=True)
+        _c_sel = st.multiselect("Canal de entrada", _c_opts, key="camp_canal",
+                                placeholder="Todos los canales")
+    with cf3:
+        _solo_act = st.checkbox("Solo con algún activado", value=False,
+                                key="camp_solo_act")
+
+    if _f_sel:
+        _camp = _camp[_camp["fuente_original"].isin(_f_sel)]
+    if _c_sel:
+        _camp = _camp[_camp["canal"].isin(_c_sel)]
+
     if _camp.empty:
-        st.info("No hay campañas identificadas en la fuente original.")
+        st.info("No hay campañas con los filtros aplicados.")
     else:
         _n_camp = st.slider("Nº de campañas a mostrar", 5, 40, 15,
                             key="contactos_top_camp")
@@ -3106,33 +3130,45 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         tc = (tc.rename(columns={"camp_original": "Campaña",
                                  "fuente_original": "Fuente original"})
               .sort_values("Contactos", ascending=False))
-        top_c = tc.head(_n_camp)
+        if _solo_act:
+            tc = tc[tc["Activados"] > 0]
 
-        fig = px.bar(top_c.sort_values("Contactos"), x="Contactos", y="Campaña",
-                     orientation="h", text="Contactos",
-                     title=f"Top {len(top_c)} campañas de origen",
-                     color="Fuente original", color_discrete_sequence=COLOR_FUENTES)
-        fig.update_layout(legend=dict(orientation="h", y=-0.18, title="", font_size=9),
-                          yaxis=dict(categoryorder="total ascending"))
-        barca_layout(fig, max(420, len(top_c) * 30 + 150))
-        st.plotly_chart(fig, use_container_width=True)
+        if tc.empty:
+            st.info("Ninguna campaña tiene contactos activados con estos filtros.")
+        else:
+            top_c = tc.head(_n_camp)
+            st.caption(
+                f"{len(tc)} campañas con los filtros aplicados · "
+                f"{int(tc['Contactos'].sum()):,}".replace(",", ".") +
+                f" contactos · {tc['Activados'].sum() / tc['Contactos'].sum() * 100:.1f} % "
+                f"de activación media."
+            )
 
-        st.dataframe(
-            top_c[["Campaña", "Fuente original", "Contactos", "% del total",
-                   "Activados", "% Activación"]]
-            .style.background_gradient(subset=["Contactos"], cmap="Blues")
-            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
-            .format({"% Activación": "{:.1f}%", "% del total": "{:.1f}%"}),
-            use_container_width=True, hide_index=True,
-            height=min(600, len(top_c) * 36 + 40),
-            column_config={"Campaña": st.column_config.TextColumn(width="large")},
-        )
-        st.download_button(
-            "⬇️ Descargar campañas de origen (CSV)",
-            data=tc.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"contactos_campanas_origen_{fi}_{ff}.csv",
-            mime="text/csv", key="dl_contactos_camp",
-        )
+            fig = px.bar(top_c.sort_values("Contactos"), x="Contactos", y="Campaña",
+                         orientation="h", text="Contactos",
+                         title=f"Top {len(top_c)} campañas de origen",
+                         color="Fuente original", color_discrete_sequence=COLOR_FUENTES)
+            fig.update_layout(legend=dict(orientation="h", y=-0.18, title="", font_size=9),
+                              yaxis=dict(categoryorder="total ascending"))
+            barca_layout(fig, max(420, len(top_c) * 30 + 150))
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(
+                top_c[["Campaña", "Fuente original", "Contactos", "% del total",
+                       "Activados", "% Activación"]]
+                .style.background_gradient(subset=["Contactos"], cmap="Blues")
+                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+                .format({"% Activación": "{:.1f}%", "% del total": "{:.1f}%"}),
+                use_container_width=True, hide_index=True,
+                height=min(600, len(top_c) * 36 + 40),
+                column_config={"Campaña": st.column_config.TextColumn(width="large")},
+            )
+            st.download_button(
+                "⬇️ Descargar campañas de origen (CSV)",
+                data=tc.to_csv(index=False, encoding="utf-8-sig"),
+                file_name=f"contactos_campanas_origen_{fi}_{ff}.csv",
+                mime="text/csv", key="dl_contactos_camp",
+            )
 
     # ══════════════════════════════════════════════════════════════════════════
     # 4. Por país y tipo de curso
