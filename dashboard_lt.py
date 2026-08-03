@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 import os
 import re
 import time
+import collections
 try:
     from zoneinfo import ZoneInfo
     TZ_CUENTA = ZoneInfo("Europe/Madrid")   # zona horaria de la cuenta de HubSpot
@@ -1502,6 +1503,53 @@ def fetch_nombres_producto(deal_ids: tuple) -> dict:
         if nombre:
             out[did] = {"nombre": nombre, "sku": (p.get("hs_sku") or "").strip()}
     return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_catalogo_productos() -> dict:
+    """
+    Código de programa (base, sin sufijo de idioma) → nombre del curso.
+
+    Sale del catálogo de productos de HubSpot, que es la única fuente que asocia
+    el código con un nombre legible sin pasar por una venta. Los contactos NO
+    traen el nombre del curso: `mail_programa_interes` y `curso` están casi
+    siempre vacíos en Low Ticket, así que sin esto los rankings de captación
+    solo pueden enseñar el código.
+
+    Las variantes de idioma se unifican: `CE_0009_EN` y `CE_0009_ES` comparten
+    nombre una vez limpio (el idioma va en un sufijo que se recorta).
+    """
+    nombres = {}
+    after = None
+    while True:
+        url = (f"{BASE}/crm/v3/objects/products"
+               f"?limit=100&properties=name,hs_sku")
+        if after:
+            url += f"&after={after}"
+        try:
+            r = _SESSION.get(url, timeout=30)
+            if not (200 <= r.status_code < 300):
+                break
+            data = r.json()
+        except Exception:
+            break
+        for p in data.get("results", []):
+            q = p.get("properties") or {}
+            sku = (q.get("hs_sku") or "").strip()
+            cod = codigo_producto(sku)
+            if not cod:
+                continue
+            base = pgm_base(cod)
+            nom = limpia_nombre_producto(q.get("name"), "", cod)
+            if base and nom and nom != cod:
+                nombres.setdefault(base, collections.Counter())[nom] += 1
+        after = data.get("paging", {}).get("next", {}).get("after")
+        if not after:
+            break
+    # Un código puede tener varias fichas (una por idioma); nos quedamos con el
+    # nombre más repetido y, a igualdad, con el más corto.
+    return {b: sorted(c.items(), key=lambda kv: (-kv[1], len(kv[0])))[0][0]
+            for b, c in nombres.items()}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -3308,33 +3356,51 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                      Tipo=("tipo_programa", lambda s: s.mode().iat[0] if not s.mode().empty else "Otro"),
                      Canal=("canal", lambda s: s.mode().iat[0] if not s.mode().empty else ""))
                 .reset_index().rename(columns={"_base": "Código"}))
+        # Nombre del curso desde el catálogo de productos de HubSpot: los
+        # contactos no lo traen, solo el código.
+        _cat = fetch_catalogo_productos()
+        rank["Programa"] = rank["Código"].map(_cat).fillna("—")
         rank["% Activación"] = (rank["Activados"] / rank["Contactos"] * 100).round(1)
         rank["% del total"] = (rank["Contactos"] / n_con * 100).round(1)
         rank = rank.sort_values("Contactos", ascending=False)
 
+        _sin_nombre = int((rank["Programa"] == "—").sum())
+        if _sin_nombre:
+            st.caption(
+                f"ℹ️ {len(rank) - _sin_nombre} de {len(rank)} códigos tienen nombre "
+                f"en el catálogo de productos de HubSpot. Los que salen con “—” no "
+                f"están dados de alta ahí con ese código."
+            )
+
         _n_top = st.slider("Nº de programas en el ranking", 5, 40, 15,
                            key="contactos_top_prog")
-        top = rank.head(_n_top)
-        fig = px.bar(top.sort_values("Contactos"), x="Contactos", y="Código",
+        top = rank.head(_n_top).copy()
+        top["_lbl"] = top.apply(
+            lambda r: f"{r['Código']} · {r['Programa'][:52]}"
+                      if r["Programa"] != "—" else r["Código"], axis=1)
+
+        fig = px.bar(top.sort_values("Contactos"), x="Contactos", y="_lbl",
                      orientation="h", text="Contactos",
                      title=f"Top {len(top)} programas por contactos captados",
                      color="Tipo", color_discrete_map=_COLOR_TIPO,
-                     category_orders={"Tipo": _tipos_pres})
+                     category_orders={"Tipo": _tipos_pres}, labels={"_lbl": ""})
         fig.update_layout(legend=dict(orientation="h", y=-0.18, title=""),
                           yaxis=dict(categoryorder="total ascending"))
-        barca_layout(fig, max(420, len(top) * 30 + 140))
+        barca_layout(fig, max(440, len(top) * 32 + 150))
         st.plotly_chart(fig, use_container_width=True)
 
         st.dataframe(
-            top[["Código", "Tipo", "Canal", "Contactos", "% del total",
+            top[["Código", "Programa", "Tipo", "Canal", "Contactos", "% del total",
                  "Activados", "% Activación"]]
             .style.background_gradient(subset=["Contactos"], cmap="Blues")
             .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
             .format({"% Activación": "{:.1f}%", "% del total": "{:.1f}%"}),
             use_container_width=True, hide_index=True,
             height=min(600, len(top) * 36 + 40),
-            column_config={"Canal": st.column_config.TextColumn(
-                "Canal principal", width="medium")},
+            column_config={
+                "Programa": st.column_config.TextColumn(width="large"),
+                "Canal": st.column_config.TextColumn("Canal principal", width="medium"),
+            },
         )
         st.download_button(
             "⬇️ Descargar ranking completo (CSV)",
@@ -4036,11 +4102,16 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
 
     # Etiqueta de programa AGRUPADA por código pgm base (unifica idiomas/nombres
     # del mismo programa). Nombre representativo = el más frecuente entre leads.
-    _pgm_name_map = {}
+    # Nombre del programa: primero el catálogo de productos de HubSpot (que
+    # cubre casi todos los códigos), y si ahí no está, lo que traiga el propio
+    # contacto en `mail_programa_interes` — que en Low Ticket casi nunca viene.
+    _pgm_name_map = dict(fetch_catalogo_productos())
     if not df_leads_prog.empty and "pgm" in df_leads_prog.columns:
         _t = df_leads_prog.copy()
         _t["_b"] = _t["pgm"].apply(pgm_base)
         for _b, _g in _t.groupby("_b"):
+            if _pgm_name_map.get(_b):
+                continue
             _n = _g["programa"][_g["programa"] != "Sin programa"].mode()
             _pgm_name_map[_b] = _n.iloc[0] if not _n.empty else _b
 

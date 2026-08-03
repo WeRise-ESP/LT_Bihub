@@ -220,6 +220,22 @@ dimensión de **origen**, no la de canal. En junio de 2026 fueron 40 contactos.
 Tampoco existe un canal "chatbot" como formulario: los del chat entran con
 `hs_object_source_label = CONVERSATIONS` (23 en junio).
 
+## 🗂️ Los nombres de curso salen del catálogo de productos
+Los contactos **no traen el nombre del curso**:  y
+ están casi siempre vacíos en Low Ticket, solo viene el código en .
+Para poder enseñar "CE_0044 · Certificate in Football Scouting" en vez de un
+código pelado,  construye un mapa
+**código base → nombre** leyendo el catálogo de productos de HubSpot
+(, campo ).
+
+Cobertura: 241 productos con SKU tipo pgm, de los que 91 códigos base son de
+Low Ticket. En junio de 2026 nombraba el **99 % de los códigos** del ranking,
+que son el **100 % de los contactos**.
+
+Lo usan el ranking de captación (página de Contactos) y  de la
+página de Conversión. Si un código sale con "—", es que no está dado de alta
+en el catálogo con ese SKU.
+
 ## Nombres de país: pasan por `normaliza_pais()`
 El país llega escrito de muchas formas según la fuente del dato (formulario en
 español, país de la IP en inglés, código ISO, hasta una ciudad). Sin unificar se
