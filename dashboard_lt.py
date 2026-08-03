@@ -1552,6 +1552,96 @@ def fetch_catalogo_productos() -> dict:
             for b, c in nombres.items()}
 
 
+# Nombres genéricos de página que aparecen en el evento de conversión y no son
+# el nombre de un curso.
+_EVENTO_BASURA = re.compile(
+    r"^(service center|newsletter|home|contacto|blog|checkout|cart|gracias|"
+    r"thank you|barça innovation hub)$", re.I)
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def fetch_nombres_cursos_es() -> dict:
+    """
+    Código de programa (base) → nombre del curso EN EL IDIOMA DEL CONTACTO.
+
+    El catálogo de productos de HubSpot solo tiene el nombre en inglés (la ficha
+    `CE_0009_ES` se llama "Certificate in Sports Cardiology [CE_0009] - Spanish"
+    y no trae descripción). El nombre en castellano solo existe en el **evento
+    de conversión** del contacto, que es el título de la página del curso:
+    "Certificado en Cardiología del Deporte - Barça Innovation Hub: FORM_...".
+
+    El idioma se elige por el sufijo del `pgm` del propio contacto (`_ES`, `_CA`,
+    `_EN`), que es más fiable que adivinarlo por el texto: hay cursos con nombre
+    de marca ("Barça Coach Academy") que parecen inglés y no lo son.
+    """
+    por = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
+    after = None
+    for _ in range(120):          # tope de seguridad
+        payload = {
+            "filterGroups": [{"filters": [
+                {"propertyName": "pgm", "operator": "CONTAINS_TOKEN", "value": f"{p}*"},
+                {"propertyName": "first_conversion_event_name",
+                 "operator": "CONTAINS_TOKEN", "value": "*Barça*"},
+            ]} for p in PGM_PREFIXES],
+            "properties": ["pgm", "first_conversion_event_name",
+                           "recent_conversion_event_name"],
+            "limit": 100,
+            "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
+        }
+        if after:
+            payload["after"] = after
+        try:
+            data = hs_post(f"{BASE}/crm/v3/objects/contacts/search", payload)
+        except Exception:
+            break
+        res = data.get("results", [])
+        if not res:
+            break
+        for c in res:
+            cp = c["properties"]
+            pgm = (cp.get("pgm") or "").strip().upper()
+            if not pgm.startswith(PGM_PREFIXES):
+                continue
+            partes = pgm.split("_")
+            base = "_".join(partes[:2])
+            idioma = partes[2] if len(partes) > 2 else ""
+            for campo in ("first_conversion_event_name", "recent_conversion_event_name"):
+                ev = (cp.get(campo) or "").strip()
+                if " - Barça" not in ev:
+                    continue
+                nom = ev.split(" - Barça")[0].strip()
+                if 8 < len(nom) < 110 and not _EVENTO_BASURA.match(nom):
+                    por[base][idioma][nom] += 1
+        after = data.get("paging", {}).get("next", {}).get("after")
+        if not after:
+            break
+
+    out = {}
+    for base, por_idioma in por.items():
+        for idioma in ("ES", "CA", "EN", ""):     # prioridad de idioma
+            if por_idioma.get(idioma):
+                out[base] = por_idioma[idioma].most_common(1)[0][0]
+                break
+        else:
+            todo = collections.Counter()
+            for c in por_idioma.values():
+                todo.update(c)
+            if todo:
+                out[base] = todo.most_common(1)[0][0]
+    return out
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def nombres_cursos() -> dict:
+    """
+    Código de programa (base) → nombre para mostrar. Manda el castellano; si un
+    curso solo existe en inglés, se queda con el nombre del catálogo.
+    """
+    nombres = dict(fetch_catalogo_productos())     # inglés, del catálogo
+    nombres.update(fetch_nombres_cursos_es())      # castellano, donde lo haya
+    return nombres
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
     """
@@ -3358,7 +3448,8 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                 .reset_index().rename(columns={"_base": "Código"}))
         # Nombre del curso desde el catálogo de productos de HubSpot: los
         # contactos no lo traen, solo el código.
-        _cat = fetch_catalogo_productos()
+        with st.spinner("Resolviendo los nombres de los cursos..."):
+            _cat = nombres_cursos()
         rank["Programa"] = rank["Código"].map(_cat).fillna("—")
         rank["% Activación"] = (rank["Activados"] / rank["Contactos"] * 100).round(1)
         rank["% del total"] = (rank["Contactos"] / n_con * 100).round(1)
@@ -3367,9 +3458,10 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         _sin_nombre = int((rank["Programa"] == "—").sum())
         if _sin_nombre:
             st.caption(
-                f"ℹ️ {len(rank) - _sin_nombre} de {len(rank)} códigos tienen nombre "
-                f"en el catálogo de productos de HubSpot. Los que salen con “—” no "
-                f"están dados de alta ahí con ese código."
+                f"ℹ️ {len(rank) - _sin_nombre} de {len(rank)} códigos tienen nombre. "
+                f"Se muestra en castellano cuando existe; si el curso solo se "
+                f"imparte en inglés, sale en inglés. Los que salen con “—” no están "
+                f"ni en el catálogo de productos ni en ningún evento de conversión."
             )
 
         _n_top = st.slider("Nº de programas en el ranking", 5, 40, 15,
@@ -4105,7 +4197,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
     # Nombre del programa: primero el catálogo de productos de HubSpot (que
     # cubre casi todos los códigos), y si ahí no está, lo que traiga el propio
     # contacto en `mail_programa_interes` — que en Low Ticket casi nunca viene.
-    _pgm_name_map = dict(fetch_catalogo_productos())
+    _pgm_name_map = dict(nombres_cursos())
     if not df_leads_prog.empty and "pgm" in df_leads_prog.columns:
         _t = df_leads_prog.copy()
         _t["_b"] = _t["pgm"].apply(pgm_base)

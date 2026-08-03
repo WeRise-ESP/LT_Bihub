@@ -228,13 +228,29 @@ código pelado, `fetch_catalogo_productos()` construye un mapa
 **código base → nombre** leyendo el catálogo de productos de HubSpot
 (`/crm/v3/objects/products`, campo `hs_sku`).
 
-Cobertura: 241 productos con SKU tipo pgm, de los que 91 códigos base son de
-Low Ticket. En junio de 2026 nombraba el **99 % de los códigos** del ranking,
-que son el **100 % de los contactos**.
+⚠️ **El catálogo solo tiene el nombre en inglés.** La ficha `CE_0009_ES` se
+llama *"Certificate in Sports Cardiology [CE_0009] - Spanish"* y `description`
+está vacía en los 91 productos `_ES`. No hay campo de nombre traducido.
+
+El nombre en castellano solo existe en el **evento de conversión** del contacto
+(`first_conversion_event_name`), que es el título de la página del curso:
+*"Certificado en Cardiología del Deporte - Barça Innovation Hub: FORM_…"*.
+`fetch_nombres_cursos_es()` lo extrae recortando por `" - Barça"`.
+
+El idioma se elige por el **sufijo del `pgm` del contacto** (`_ES` → `_CA` →
+`_EN`), no adivinándolo del texto: hay cursos con nombre de marca
+(*Barça Coach Academy*, *Coaches Academy II*) que parecen inglés y no lo son.
+
+`nombres_cursos()` mezcla las dos fuentes: manda el castellano y el catálogo
+queda de respaldo para los cursos que solo se imparten en inglés (18 de 89).
+
+Cobertura en junio de 2026: **121 códigos** en el mapa, 92 de Low Ticket, que
+nombran el **100 %** de los códigos del ranking. Cuesta ~30 s la primera vez
+(47 páginas de contactos + 10 de productos), por eso la caché es de **2 horas**.
 
 Lo usan el ranking de captación (página de Contactos) y `_prog_label` de la
-página de Conversión. Si un código sale con "—", es que no está dado de alta
-en el catálogo con ese SKU.
+página de Conversión. Si un código sale con "—", no está ni en el catálogo ni
+en ningún evento de conversión.
 
 ## Nombres de país: pasan por `normaliza_pais()`
 El país llega escrito de muchas formas según la fuente del dato (formulario en
