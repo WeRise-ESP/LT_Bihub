@@ -221,18 +221,18 @@ Tampoco existe un canal "chatbot" como formulario: los del chat entran con
 `hs_object_source_label = CONVERSATIONS` (23 en junio).
 
 ## 🗂️ Los nombres de curso salen del catálogo de productos
-Los contactos **no traen el nombre del curso**:  y
- están casi siempre vacíos en Low Ticket, solo viene el código en .
+Los contactos **no traen el nombre del curso**: `mail_programa_interes` y
+`curso` están casi siempre vacíos en Low Ticket, solo viene el código en `pgm`.
 Para poder enseñar "CE_0044 · Certificate in Football Scouting" en vez de un
-código pelado,  construye un mapa
+código pelado, `fetch_catalogo_productos()` construye un mapa
 **código base → nombre** leyendo el catálogo de productos de HubSpot
-(, campo ).
+(`/crm/v3/objects/products`, campo `hs_sku`).
 
 Cobertura: 241 productos con SKU tipo pgm, de los que 91 códigos base son de
 Low Ticket. En junio de 2026 nombraba el **99 % de los códigos** del ranking,
 que son el **100 % de los contactos**.
 
-Lo usan el ranking de captación (página de Contactos) y  de la
+Lo usan el ranking de captación (página de Contactos) y `_prog_label` de la
 página de Conversión. Si un código sale con "—", es que no está dado de alta
 en el catálogo con ese SKU.
 
