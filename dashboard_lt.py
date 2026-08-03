@@ -797,24 +797,40 @@ def label_fuente(raw: str) -> str:
     return FUENTES_ES.get(raw, raw.replace("_", " ").title())
 
 
+def _etiqueta_campana(v: str) -> str:
+    """
+    A veces el drill-down no trae el nombre de la campaña sino su ID numérico
+    (Meta lo hace cuando HubSpot no ha podido resolver el nombre). Un número
+    pelado en la tabla parece un dato corrupto, así que se etiqueta para que se
+    vea que es un ID sin resolver y no una campaña mal nombrada.
+    HubSpot no permite traducirlo: sus propias campañas usan UUID, no el id de
+    Meta. Habría que cruzarlo con la API de Meta Ads.
+    """
+    v = (v or "").strip()
+    if v.isdigit() and len(v) >= 10:
+        return f"Sin nombre · ID {v}"
+    return v
+
+
 def nombre_campana(src_raw: str, d1: str, d2: str) -> str:
     """
     Nombre de la campaña según la fuente:
     - PAID_SEARCH (Google): la campaña está en el drill-down 1.
-    - PAID_SOCIAL (Meta):  el drill-down 1 es la plataforma; la campaña está en el 2.
+    - PAID_SOCIAL (Meta):  el drill-down 1 es la plataforma (Facebook /
+      Instagram) y la campaña está en el 2.
     - Otras: se prefiere el valor que parezca un código de campaña.
     """
     src = (src_raw or "").upper()
     d1 = (d1 or "").strip()
     d2 = (d2 or "").strip()
     if src == "PAID_SOCIAL":
-        return d2 or d1 or "Sin campaña"
+        return _etiqueta_campana(d2 or d1) or "Sin campaña"
     if src == "PAID_SEARCH":
-        return d1 or d2 or "Sin campaña"
+        return _etiqueta_campana(d1 or d2) or "Sin campaña"
     for v in (d2, d1):
         if v and ("fcb" in v.lower() or "_" in v or "/" in v):
-            return v
-    return d1 or d2 or "Sin campaña"
+            return _etiqueta_campana(v)
+    return _etiqueta_campana(d1 or d2) or "Sin campaña"
 
 
 # ── Fetching de contactos por propiedad pgm (con caché) ───────────────────────
