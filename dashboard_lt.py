@@ -4581,15 +4581,12 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
     # Nombre del programa: primero el catálogo de productos de HubSpot (que
     # cubre casi todos los códigos), y si ahí no está, lo que traiga el propio
     # contacto en `mail_programa_interes` — que en Low Ticket casi nunca viene.
+    # ⚠️ El nombre sale SOLO del catálogo de cursos. Nada de rellenar con lo que
+    # traigan los leads: hay contactos con códigos que no existen cuyo
+    # `mail_programa_interes` es de otro programa, y salían etiquetas falsas
+    # (un máster colgado de un código de programa ejecutivo). Si el código no
+    # está en el catálogo se muestra solo el código y se avisa.
     _pgm_name_map = dict(nombres_cursos())
-    if not df_leads_prog.empty and "pgm" in df_leads_prog.columns:
-        _t = df_leads_prog.copy()
-        _t["_b"] = _t["pgm"].apply(pgm_base)
-        for _b, _g in _t.groupby("_b"):
-            if _pgm_name_map.get(_b):
-                continue
-            _n = _g["programa"][_g["programa"] != "Sin programa"].mode()
-            _pgm_name_map[_b] = _n.iloc[0] if not _n.empty else _b
 
     def _prog_label(pgm):
         b = pgm_base(pgm)
@@ -4602,6 +4599,26 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
         df_leads_prog["prog_pgm"] = df_leads_prog["pgm"].apply(_prog_label)
     if not df_ganados_prog_f.empty and "pgm" in df_ganados_prog_f.columns:
         df_ganados_prog_f["prog_pgm"] = df_ganados_prog_f["pgm"].apply(_prog_label)
+
+    # Códigos que no están dados de alta en el catálogo de Cursos: suelen ser
+    # erratas en el `pgm` del contacto y conviene verlas para corregirlas.
+    _codigos_raros = {}
+    for _frame in (df_leads_prog, df_ganados_prog_f):
+        if _frame.empty or "pgm" not in _frame.columns:
+            continue
+        for _b, _g in _frame.groupby(_frame["pgm"].apply(pgm_base)):
+            if _b and _b not in _pgm_name_map:
+                _codigos_raros[_b] = _codigos_raros.get(_b, 0) + len(_g)
+    if _codigos_raros:
+        _lista = ", ".join(f"`{c}` ({n})" for c, n in
+                           sorted(_codigos_raros.items(), key=lambda kv: -kv[1])[:12])
+        st.warning(
+            f"⚠️ {len(_codigos_raros)} códigos de programa no están en el "
+            f"catálogo de **Cursos** de HubSpot, así que se muestran sin nombre: "
+            f"{_lista}. Suelen ser erratas en el `pgm` del contacto — conviene "
+            f"revisarlas en el CRM.",
+            icon="⚠️",
+        )
 
     # "¿Tiene programa identificado?" se decide por el CÓDIGO, no por el nombre.
     # El nombre sale de `mail_programa_interes` del contacto y en Low Ticket casi
