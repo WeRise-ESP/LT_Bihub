@@ -4300,7 +4300,7 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
         _gan_won = df_deals_periodo[df_deals_periodo["etapa"] == "Cierre ganado"].drop_duplicates("deal_id")
 
     def _asigna_negocios(tbl):
-        """Asigna "Ventas NEGOCIO" por [Programa(pgm), Campaña] sin duplicar:
+        """Asigna "Ventas (cierre)" por [Programa(pgm), Campaña] sin duplicar:
         el recuento de cada campaña se coloca en su fila con más Leads. Así el total
         coincide en todas las tablas (mismo criterio pgm+campaña)."""
         tbl = tbl.copy()
@@ -4351,21 +4351,25 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
             "Campaña":       st.column_config.TextColumn(width="large"),
             "% Activado":    st.column_config.NumberColumn(format="%.1f%%", width="small"),
             "% Venta":       st.column_config.NumberColumn(format="%.1f%%", width="small"),
-            "Ganados":       st.column_config.NumberColumn("Leads en 'Negocio ganado'", width="small"),
-            "Neg. Ganados":  st.column_config.NumberColumn("Ventas NEGOCIO", width="small"),
+            "Ganados":       st.column_config.NumberColumn(
+                "Leads con venta", width="small",
+                help="De los leads entrados en el rango de fechas seleccionado, "
+                     "cuántos han comprado ya — cerraran cuando cerraran."),
+            "Neg. Ganados":  st.column_config.NumberColumn(
+                "Ventas (cierre)", width="small",
+                help="Ventas cuya fecha de CIERRE cae en el rango seleccionado, "
+                     "entrara el lead cuando entrara. Misma base que el KPI del "
+                     "Dashboard general."),
         },
     )
     st.markdown(
         f"<div style='font-size:12px;color:{BARCA['ink40']};margin-top:6px;line-height:1.5'>"
-        f"ℹ️ <b>Nota:</b> hay dos formas de contar venta por campaña:<br>"
-        f"• <b>Ganados</b> (+ % Venta): <b>leads del período</b> (por fecha de creación) "
-        f"que hoy tienen <code>lt_lead_status</code> = <b>'Negocio ganado'</b>, atribuidos a la "
-        f"campaña que los captó.<br>"
-        f"• <b>Ventas NEGOCIO</b>: negocios de <b>Cierre Ganado</b> de la campaña por "
-        f"<b>fecha de cierre</b> del negocio (no importa cuándo se creó el lead) — misma base que el "
-        f"KPI del Dashboard general.<br>"
-        f"Ambas son útiles: la primera mide captación de campañas del período; la segunda, cierres "
-        f"ocurridos en el período. Por eso pueden diferir.</div>",
+        f"ℹ️ Las dos columnas cuentan sobre el <b>rango de fechas que tengas "
+        f"seleccionado</b>, pero una cuenta <b>leads</b> y la otra <b>ventas</b>:<br>"
+        f"• <b>Leads con venta</b> — de los leads <b>entrados</b> en el rango, cuántos han "
+        f"comprado ya. Juzga la campaña que los captó.<br>"
+        f"• <b>Ventas (cierre)</b> — ventas <b>cerradas</b> en el rango, entrara el lead "
+        f"cuando entrara. Es la venta del rango.</div>",
         unsafe_allow_html=True,
     )
 
@@ -4410,12 +4414,21 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
             column_config={
                 "Campaña":       st.column_config.TextColumn(width="large"),
                 "% Activado":    st.column_config.NumberColumn(format="%.1f%%", width="small"),
-                "Neg. Ganados":  st.column_config.NumberColumn("Ventas NEGOCIO", width="small"),
+                "Ganados":       st.column_config.NumberColumn(
+                    "Leads con venta", width="small",
+                    help="De los leads entrados en el rango seleccionado, cuántos "
+                         "han comprado ya."),
+                "Neg. Ganados":  st.column_config.NumberColumn(
+                    "Ventas (cierre)", width="small",
+                    help="Ventas cerradas en el rango seleccionado, entrara el lead "
+                         "cuando entrara."),
             },
         )
         st.download_button(
             "⬇️ Descargar CSV (fuente × región)",
-            data=_tbl.to_csv(index=False, encoding="utf-8-sig"),
+            data=_tbl.rename(columns={"Ganados": "Leads con venta",
+                                      "Neg. Ganados": "Ventas (cierre)"})
+                     .to_csv(index=False, encoding="utf-8-sig"),
             file_name=f"leads_fuente_region_{fi}_{ff}.csv",
             mime="text/csv", key="dl_leads_fuente_region",
         )
