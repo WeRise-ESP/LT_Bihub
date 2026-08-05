@@ -4577,7 +4577,11 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
         else:
             mat_by_prog = pd.DataFrame(columns=["prog_pgm", "Ventas"])
 
-        conv_table = leads_by_prog.merge(mat_by_prog, on="prog_pgm", how="left").fillna(0)
+        # outer, no left: un programa puede tener ventas en el rango sin tener
+        # ningún lead nuevo (el lead entró antes). Con "left" esas ventas
+        # desaparecían de la tabla y no cuadraba con el KPI.
+        conv_table = leads_by_prog.merge(mat_by_prog, on="prog_pgm", how="outer").fillna(0)
+        conv_table["Leads"] = conv_table["Leads"].astype(int)
         conv_table["Ventas"] = conv_table["Ventas"].astype(int)
         conv_table["Tasa (%)"] = (
             conv_table["Ventas"] / conv_table["Leads"] * 100
@@ -4683,7 +4687,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
             else:
                 mat_p = pd.DataFrame(columns=["pais", "Ventas"])
 
-            pais_table = leads_p.merge(mat_p, on="pais", how="left").fillna(0)
+            pais_table = leads_p.merge(mat_p, on="pais", how="outer").fillna(0)
             pais_table["Ventas"] = pais_table["Ventas"].astype(int)
             pais_table["Tasa (%)"] = (
                 pais_table["Ventas"] / pais_table["Leads"] * 100
@@ -4719,7 +4723,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
             else:
                 mat_f = pd.DataFrame(columns=["fuente", "Ventas"])
 
-            fuente_table = leads_f.merge(mat_f, on="fuente", how="left").fillna(0)
+            fuente_table = leads_f.merge(mat_f, on="fuente", how="outer").fillna(0)
             fuente_table["Ventas"] = fuente_table["Ventas"].astype(int)
             fuente_table["Tasa (%)"] = (
                 fuente_table["Ventas"] / fuente_table["Leads"] * 100
@@ -4781,7 +4785,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
                            .rename(columns={"prog_pgm": "Programa"})
                            if not _mg.empty else pd.DataFrame(columns=["Programa", "pais", "Ventas"]))
 
-         prog_pais = _prog_pais_leads.merge(_prog_pais_mat, on=["Programa", "pais"], how="left").fillna(0)
+         prog_pais = _prog_pais_leads.merge(_prog_pais_mat, on=["Programa", "pais"], how="outer").fillna(0)
          prog_pais["Ventas"] = prog_pais["Ventas"].astype(int)
          prog_pais["Tasa (%)"] = (
              prog_pais["Ventas"] / prog_pais["Leads"] * 100
