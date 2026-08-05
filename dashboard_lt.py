@@ -573,6 +573,17 @@ def tipo_programa(pgm_val: str) -> str:
     return "Otro"
 
 
+# Códigos mal escritos que envían algunos formularios de la web. El `pgm` lo
+# rellena un campo oculto de la landing, así que una errata ahí se propaga a
+# todos los contactos que entran por esa página.
+#   PG_04 → PG_004: la landing del "Posgrado Ejecutivo en Análisis Táctico y
+#   Scouting en Fútbol Profesional" manda el código con un cero de menos.
+# Lo suyo es corregirlo en la web; mientras tanto se normaliza aquí.
+_ALIAS_PGM = {
+    "PG_04": "PG_004",
+}
+
+
 def pgm_base(pgm_val: str) -> str:
     """
     Código base del programa a partir de pgm, quitando el sufijo de idioma
@@ -584,8 +595,8 @@ def pgm_base(pgm_val: str) -> str:
         return ""
     parts = v.split("_")
     if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-1].isalpha():
-        return "_".join(parts[:-1])
-    return v
+        v = "_".join(parts[:-1])
+    return _ALIAS_PGM.get(v, v)
 
 
 # ── Clasificación de producto vendido ─────────────────────────────────────────
