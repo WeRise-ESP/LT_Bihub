@@ -4299,20 +4299,38 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
             and "etapa" in df_deals_periodo.columns and _camp_deal_col in df_deals_periodo.columns):
         _gan_won = df_deals_periodo[df_deals_periodo["etapa"] == "Cierre ganado"].drop_duplicates("deal_id")
 
-    def _asigna_negocios(tbl):
-        """Asigna "Ventas (cierre)" por [Programa(pgm), Campaña] sin duplicar:
-        el recuento de cada campaña se coloca en su fila con más Leads. Así el total
-        coincide en todas las tablas (mismo criterio pgm+campaña)."""
+    def _asigna_negocios(tbl, cols_txt):
+        """
+        Reparte "Ventas (cierre)" por [Programa(pgm), Campaña] sin duplicar: el
+        recuento de cada campaña se coloca en su fila con más Leads.
+
+        ⚠️ Una venta cerrada en el rango puede venir de un lead captado ANTES, y
+        entonces no existe fila donde colgarla. Esas ventas se añaden como filas
+        propias con Leads = 0, en vez de descartarse: si no, la columna sumaba
+        menos que el KPI de ventas del Dashboard general.
+        """
         tbl = tbl.copy()
         tbl["Neg. Ganados"] = 0
         if _gan_won.empty:
             return tbl
         won = _gan_won.groupby(["pgm", _camp_deal_col])["deal_id"].nunique()
+        huerfanas = []
         for (prog, camp), cnt in won.items():
             mask = (tbl["Programa"] == prog) & (tbl["Campaña"] == camp)
             if mask.any():
                 idx = tbl.loc[mask, "Leads"].idxmax()
                 tbl.at[idx, "Neg. Ganados"] = int(cnt)
+            else:
+                fila = {c: "—" for c in cols_txt}
+                fila["Programa"] = prog
+                fila["Campaña"] = camp
+                for c in tbl.columns:
+                    if c not in cols_txt and c != "Neg. Ganados":
+                        fila[c] = 0
+                fila["Neg. Ganados"] = int(cnt)
+                huerfanas.append(fila)
+        if huerfanas:
+            tbl = pd.concat([tbl, pd.DataFrame(huerfanas)], ignore_index=True)
         return tbl
 
     def _con_total(tbl, cols_num, cols_txt):
@@ -4339,7 +4357,7 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
     piv["% Venta"]    = (piv["Ganados"] / piv["Leads"] * 100).round(1)
     piv = piv.rename(columns={"pgm": "Programa", "tipo_programa": "Tipo",
                               fuente_col: "Fuente", camp_col: "Campaña"})
-    piv = _asigna_negocios(piv)
+    piv = _asigna_negocios(piv, ["Programa", "Tipo", "Fuente", "Campaña"])
     piv = piv.sort_values("Leads", ascending=False)
     piv = _con_total(piv, ["Leads", "Activados", "Ganados", "Neg. Ganados"],
                      ["Programa", "Tipo", "Fuente", "Campaña"])
@@ -4369,7 +4387,9 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
         f"• <b>Leads con venta</b> — de los leads <b>entrados</b> en el rango, cuántos han "
         f"comprado ya. Juzga la campaña que los captó.<br>"
         f"• <b>Ventas (cierre)</b> — ventas <b>cerradas</b> en el rango, entrara el lead "
-        f"cuando entrara. Es la venta del rango.</div>",
+        f"cuando entrara. Suma igual que el KPI del Dashboard general.<br>"
+        f"Las filas con <b>Leads = 0</b> son ventas de leads captados <b>antes</b> del rango: "
+        f"no hay fila de captación donde colgarlas, pero cuentan.</div>",
         unsafe_allow_html=True,
     )
 
@@ -4403,7 +4423,8 @@ def _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo=None):
                                      "tipo_programa": "Tipo", "pgm": "Programa",
                                      camp_col: "Campaña", "pais": "País"}))
         # Mismo criterio de negocio que la tabla de campañas (por pgm+campaña) → totales cuadran
-        _tbl = _asigna_negocios(_tbl)
+        _tbl = _asigna_negocios(_tbl, ["Región", "Fuente", "Tipo", "Programa",
+                                       "Campaña", "País"])
         _tbl = _tbl.sort_values("Leads", ascending=False)
         _tbl = _con_total(_tbl, ["Leads", "Activados", "Ganados", "Neg. Ganados"],
                           ["Región", "Fuente", "Tipo", "Programa", "Campaña", "País"])
