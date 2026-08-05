@@ -1657,14 +1657,70 @@ def fetch_nombres_cursos_es() -> dict:
     return out
 
 
+# Objeto de HubSpot "Cursos": el catálogo oficial. Cada ficha trae el código pgm
+# en `hs_course_id` y el nombre del curso en su idioma en `hs_course_name`.
+CURSOS_OBJECT = "0-410"
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def fetch_cursos_oficiales() -> dict:
+    """
+    Código de programa (base) → nombre del curso, del objeto **Cursos** de
+    HubSpot. Es la fuente buena y barata: 290 fichas con el nombre en
+    castellano, inglés y catalán, sin tener que rascarlo de los contactos.
+    Se prefiere el nombre en castellano (`_ES`), luego catalán y luego inglés.
+    """
+    por_idioma = {}
+    after = None
+    for _ in range(40):
+        url = (f"{BASE}/crm/v3/objects/{CURSOS_OBJECT}"
+               f"?limit=100&properties=hs_course_id&properties=hs_course_name")
+        if after:
+            url += f"&after={after}"
+        try:
+            r = _SESSION.get(url, timeout=30)
+            if not (200 <= r.status_code < 300):
+                break
+            data = r.json()
+        except Exception:
+            break
+        for o in data.get("results", []):
+            q = o.get("properties") or {}
+            cod = (q.get("hs_course_id") or "").strip().upper()
+            nombre = (q.get("hs_course_name") or "").strip()
+            if not cod or not nombre:
+                continue
+            partes = cod.split("_")
+            idioma = partes[2] if len(partes) > 2 else ""
+            por_idioma.setdefault(pgm_base(cod), {})[idioma] = nombre
+        after = data.get("paging", {}).get("next", {}).get("after")
+        if not after:
+            break
+
+    out = {}
+    for base, idiomas in por_idioma.items():
+        for idi in ("ES", "CA", "EN", ""):
+            if idiomas.get(idi):
+                out[base] = idiomas[idi]
+                break
+        else:
+            out[base] = next(iter(idiomas.values()))
+    return out
+
+
 @st.cache_data(ttl=7200, show_spinner=False)
 def nombres_cursos() -> dict:
     """
-    Código de programa (base) → nombre para mostrar. Manda el castellano; si un
-    curso solo existe en inglés, se queda con el nombre del catálogo.
+    Código de programa (base) → nombre para mostrar.
+
+    Manda el objeto **Cursos** de HubSpot, que es el catálogo oficial y trae el
+    nombre en castellano. Las otras dos fuentes quedan de respaldo para códigos
+    que no estén dados de alta ahí: el catálogo de productos (solo inglés) y el
+    evento de conversión de los contactos.
     """
     nombres = dict(fetch_catalogo_productos())     # inglés, del catálogo
-    nombres.update(fetch_nombres_cursos_es())      # castellano, donde lo haya
+    nombres.update(fetch_nombres_cursos_es())      # castellano, de los eventos
+    nombres.update(fetch_cursos_oficiales())       # oficial, manda este
     return nombres
 
 
