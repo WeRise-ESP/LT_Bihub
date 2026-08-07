@@ -1079,6 +1079,21 @@ def becas_activas(fecha: str) -> list:
     return [b for b in BECAS if b["desde"] <= f <= b["hasta"]]
 
 
+# Negocios de prueba del equipo. No son ventas reales y descuadran los totales:
+# en Low Ticket hay 21 cierres ganados de prueba por 16.272 €, y dos de ellos
+# ("#14427 Albert test 2", 7.700 € cada uno) metían 15.400 € en junio de 2026,
+# un 9 % de la facturación del mes. El resto son pedidos "Test Adsmurai" de 0 €
+# y compras hechas con correos @test.
+# Ojo: aquí el nombre del negocio incluye el email del comprador, así que el
+# patrón caza también los correos de prueba, que es justo lo que se quiere.
+_RE_NEGOCIO_PRUEBA = re.compile(
+    r"\b(prueba|pruebas|test|testing|dummy|borrar|ejemplo)\b", re.I)
+
+
+def es_negocio_prueba(dealname: str) -> bool:
+    return bool(_RE_NEGOCIO_PRUEBA.search(dealname or ""))
+
+
 # ── Pipelines de venta Low Ticket ──────────────────────────────────────────────
 # La operativa de venta migró de "Pipeline de ventas" (el histórico, id `default`)
 # a "WooCommerce Orders" en mayo de 2026: el pipeline antiguo deja de registrar
@@ -1187,6 +1202,8 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 # Corte histórico/Woo: descarta el cierre que cae en el lado que
                 # no le toca para no duplicar pedidos durante el solape.
                 if _fuera_del_corte(pipeline_id, fecha_cierre):
+                    continue
+                if es_negocio_prueba(p.get("dealname")):
                     continue
                 # Fuera los productos de High Ticket vendidos por este canal.
                 _cod = codigo_producto(p.get("codigo_del_producto"), p.get("dealname"))
@@ -1377,6 +1394,8 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
                 p = d["properties"]
                 fecha_c = _fecha_cuenta(p.get("closedate"))
                 if _fuera_del_corte(pipeline_id, fecha_c):
+                    continue
+                if es_negocio_prueba(p.get("dealname")):
                     continue
                 _cod = codigo_producto(p.get("codigo_del_producto"), p.get("dealname"))
                 if EXCLUIR_HIGH_TICKET and es_high_ticket(
