@@ -621,6 +621,13 @@ _PALABRAS_TIPO = [
 ]
 
 
+def _num_seguro(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def codigo_producto(*candidatos) -> str:
     """
     Primer código de programa (p. ej. `CE_0040_ES`) que aparezca en los textos
@@ -1072,6 +1079,46 @@ def etiqueta_beca(b: dict) -> str:
     return f"{b['nombre']} {b['desc']}%"
 
 
+SIN_BECA = "Sin beca / otro descuento"
+
+
+def _pct_descuento(importe, descuento):
+    """% de descuento sobre el precio antes de rebaja. None si no hay dato."""
+    imp, des = _num_seguro(importe), _num_seguro(descuento)
+    bruto = imp + des
+    if bruto <= 0:
+        return None
+    return round(des / bruto * 100)
+
+
+def beca_de_venta(fecha: str, pct) -> str:
+    """
+    Beca a la que se atribuye una venta.
+
+    ⚠️ No basta la fecha: entre un 15 y un 20 % de las ventas de un período de
+    beca NO usaron esa beca (compraron sin descuento o con otro). Así que se
+    mira el descuento REALMENTE aplicado (`discount_amount` del negocio, relleno
+    en el 94 % de los casos) y se busca cuál de las becas vigentes ese día
+    encaja, con dos puntos de margen por los redondeos.
+
+    Esto además resuelve el solape: del 6 al 19 de julio convivían New Skills
+    (40 %) y Masterclasses (60 %), y el descuento dice cuál es cuál. Con la
+    atribución por fecha, esas ventas contaban en las dos.
+
+    Si no hay dato de descuento se cae a la fecha, y si ninguna beca encaja la
+    venta va a "Sin beca / otro descuento" en vez de colgarse de una que no usó.
+    """
+    activas = becas_activas(fecha)
+    if not activas:
+        return SIN_BECA
+    if pct is None:                      # sin dato: lo único que queda es la fecha
+        return etiqueta_beca(activas[0])
+    for b in activas:
+        if abs(pct - b["desc"]) <= 2:
+            return etiqueta_beca(b)
+    return SIN_BECA
+
+
 def becas_activas(fecha: str) -> list:
     """Becas vigentes en una fecha 'YYYY-MM-DD'."""
     f = (fecha or "")[:10]
@@ -1190,7 +1237,10 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 "filterGroups": [{"filters": filters}],
                 "properties": ["dealname", "closedate", "createdate",
                                "curso", "id_curso", "amount",
-                               "codigo_del_producto"],
+                               "codigo_del_producto",
+                               # Descuento aplicado, para saber qué beca usó
+                               # de verdad y no suponerlo por la fecha.
+                               "discount_amount"],
                 "limit": 100,
             }
             if after:
@@ -1221,6 +1271,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                     "fecha_cierre": fecha_cierre,
                     "mes":          fecha_cierre[:7] if fecha_cierre else "",
                     "importe":      _imp,
+                    "descuento":    _num_seguro(p.get("discount_amount")),
                     "curso":        (p.get("curso") or "").strip(),
                     "dealname":     (p.get("dealname") or "").strip(),
                     "cod_producto": _cod,
@@ -1341,6 +1392,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 "edad":          data.get("edad"),
                 "nivel_estudios": data.get("nivel_estudios", ""),
                 "curso":         info.get("curso", ""),
+                "descuento":     info.get("descuento", 0.0),
                 "dealname":      info.get("dealname", ""),
                 "cod_producto":  info.get("cod_producto", ""),
                 "tipo_curso":    info.get("tipo_curso", "Otros"),
@@ -1816,6 +1868,11 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "mercado":      resolve_mercado(r.get("pais") or "Sin datos"),
             "fuente":       r.get("fuente") or "Sin datos",
             "importe":      float(r.get("importe") or 0.0),
+            "descuento":    float(r.get("descuento") or 0.0),
+            "pct_descuento": _pct_descuento(r.get("importe"), r.get("descuento")),
+            "beca":         beca_de_venta(r.get("fecha_cierre"),
+                                          _pct_descuento(r.get("importe"),
+                                                         r.get("descuento"))),
             "fecha_cierre": r.get("fecha_cierre", ""),
             "mes":          r.get("mes", ""),
         })
@@ -3106,10 +3163,10 @@ def _render_becas_page(dv, periodo_txt, fi, ff):
                            if o is not b and o["desde"] <= b["hasta"] and o["hasta"] >= b["desde"])]
         if _solapan:
             st.caption(
-                "⚠️ Hay becas **solapadas** (New Skills y Masterclasses convivieron "
-                "del 6 al 19 de julio). En la tabla por beca de más abajo, una venta "
-                "de esos días cuenta en las dos, así que la suma por becas supera el "
-                "total del período. Las cifras semanales sí son exactas."
+                "ℹ️ Hay becas **solapadas** (New Skills 40 % y Masterclasses 60 % "
+                "convivieron del 6 al 19 de julio), pero eso ya no duplica nada: "
+                "cada venta se asigna a la beca cuyo descuento coincide con el que "
+                "de verdad se aplicó."
             )
 
     # ── Tabla semanal por tipo de curso ───────────────────────────────────────
@@ -3202,18 +3259,27 @@ def _render_becas_page(dv, periodo_txt, fi, ff):
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
     st.markdown("### 🎁 Resultados por beca")
-    st.caption("Se compara la **media diaria**, no el total: las promociones duran "
-               "distinto (Stars 5 días, New Skills 21) y los totales no son "
-               "comparables entre sí.")
+    st.caption(
+        "Cada venta cuenta en **una sola** beca: la que realmente usó, según el "
+        "descuento aplicado en el pedido (`discount_amount`), no según la fecha. "
+        "Las que no encajan con ninguna beca vigente —compraron sin descuento o "
+        "con otro— van a **«Sin beca / otro descuento»**, así la tabla suma el "
+        "total del período.  \n"
+        "Compara por **media diaria**, no por total: las promociones duran "
+        "distinto (Stars 5 días, New Skills 21) y los totales no son comparables."
+    )
 
+    # Cada venta va a UNA beca, la que de verdad usó (ver beca_de_venta).
     filas, por_tipo = [], []
     for b in _becas_periodo:
+        et = etiqueta_beca(b)
         ini, fin = pd.Timestamp(b["desde"]), pd.Timestamp(b["hasta"])
-        sub = d[(d["_f"] >= ini) & (d["_f"] <= fin)]
+        sub = d[d["beca"] == et] if "beca" in d.columns else \
+            d[(d["_f"] >= ini) & (d["_f"] <= fin)]
         # Días con datos reales: una beca en curso aún no ha terminado
         dias = max(1, (min(fin, _fin) - max(ini, _ini)).days + 1)
         filas.append({
-            "Beca": etiqueta_beca(b),
+            "Beca": et,
             "Desde": ini.strftime("%d/%m/%Y"),
             "Hasta": fin.strftime("%d/%m/%Y"),
             "Días con datos": dias,
@@ -3224,8 +3290,27 @@ def _render_becas_page(dv, periodo_txt, fi, ff):
             "€/día": round(float(sub["importe"].sum()) / dias, 0),
         })
         for t, g in sub.groupby("tipo_curso"):
-            por_tipo.append({"Beca": etiqueta_beca(b), "Tipo": t,
-                             "Matriculaciones": len(g),
+            por_tipo.append({"Beca": et, "Tipo": t, "Matriculaciones": len(g),
+                             "Facturación": float(g["importe"].sum())})
+
+    # Ventas del período que no usaron ninguna beca: se enseñan igual, para que
+    # la tabla sume el total y no parezca que se han perdido por el camino.
+    _sin = d[d["beca"] == SIN_BECA] if "beca" in d.columns else d.iloc[0:0]
+    if len(_sin):
+        _dias_p = max(1, (_fin - _ini).days + 1)
+        filas.append({
+            "Beca": SIN_BECA,
+            "Desde": _ini.strftime("%d/%m/%Y"),
+            "Hasta": _fin.strftime("%d/%m/%Y"),
+            "Días con datos": _dias_p,
+            "Matriculaciones": len(_sin),
+            "Facturación": float(_sin["importe"].sum()),
+            "Ticket medio": float(_sin["importe"].mean()),
+            "Matr./día": round(len(_sin) / _dias_p, 1),
+            "€/día": round(float(_sin["importe"].sum()) / _dias_p, 0),
+        })
+        for t, g in _sin.groupby("tipo_curso"):
+            por_tipo.append({"Beca": SIN_BECA, "Tipo": t, "Matriculaciones": len(g),
                              "Facturación": float(g["importe"].sum())})
 
     if not filas:

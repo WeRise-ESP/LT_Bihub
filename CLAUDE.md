@@ -220,6 +220,28 @@ dimensión de **origen**, no la de canal. En junio de 2026 fueron 40 contactos.
 Tampoco existe un canal "chatbot" como formulario: los del chat entran con
 `hs_object_source_label = CONVERSATIONS` (23 en junio).
 
+## 🎁 La beca se atribuye por el DESCUENTO, no por la fecha
+Una venta cerrada durante una beca no significa que la usara. Medido sobre
+julio-agosto de 2026, entre un **15 y un 20 %** de las ventas de cada período no
+llevaban ese descuento: compraron sin rebaja o con otra distinta.
+
+`beca_de_venta()` mira el descuento **realmente aplicado** —`discount_amount`
+del negocio, relleno en el **94 %** de las ventas de WooCommerce— y busca cuál
+de las becas vigentes ese día encaja, con 2 puntos de margen por redondeos.
+
+Ventajas sobre la atribución por fecha:
+
+- **Resuelve el solape.** Del 6 al 19 de julio convivían New Skills (40 %) y
+  Masterclasses (60 %); el descuento dice cuál es cuál. Antes esas ventas
+  contaban en las dos y la tabla por beca sumaba más que el período.
+- **Cada venta cuenta una sola vez**, así que la tabla por beca suma exactamente
+  el total del período.
+- Las que no encajan con ninguna van a **"Sin beca / otro descuento"** en vez de
+  colgarse de una que no usaron. En julio-agosto son 82 ventas y 35.857 €.
+
+Si un negocio no tiene `discount_amount` se cae a la fecha, que es lo único que
+queda. Hoy es 1 de cada 637.
+
 ## 🎁 Las becas se mantienen A MANO
 Los períodos de promoción **no están en HubSpot**: viven en la constante
 `BECAS` de `dashboard_lt.py`. Cuando entre una nueva, hay que añadirla ahí o la
