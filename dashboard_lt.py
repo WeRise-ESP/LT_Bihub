@@ -1775,6 +1775,7 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "mercado", "fuente", "importe", "fecha_cierre", "mes"])
 
     li = fetch_nombres_producto(tuple(g["deal_id"].tolist()))
+    _cat_cursos = nombres_cursos()
 
     filas = []
     for _, r in g.iterrows():
@@ -1797,9 +1798,16 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             _afinado = tipo_producto("", nombre_li)
             if _afinado not in TIPOS_HIGH_TICKET and _afinado != "Otros":
                 tipo = _afinado
+        # Nombre a mostrar: manda el del catálogo de cursos, que está en
+        # castellano. El del line item viene en inglés ("Certificate in
+        # Psychology for High Performance Sports"), así que solo se usa para los
+        # productos sin código, que no están en el catálogo (Barça Coach
+        # Academy, Football Scouting, extras de alumni...).
+        _nombre_cat = _cat_cursos.get(pgm_base(codigo)) if codigo else None
         filas.append({
             "deal_id":      r["deal_id"],
-            "producto":     limpia_nombre_producto(nombre_li, r.get("dealname"), codigo),
+            "producto":     _nombre_cat or limpia_nombre_producto(
+                                nombre_li, r.get("dealname"), codigo),
             "cod_producto": codigo,
             # Código sin sufijo de idioma: agrupa CE_0040_ES y CE_0040_EN
             "cod_base":     pgm_base(codigo),
