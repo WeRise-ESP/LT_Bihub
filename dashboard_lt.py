@@ -1060,10 +1060,11 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
 # Ojo: pueden SOLAPARSE (New Skills y Masterclasses convivieron del 6 al 19 de
 # julio), así que un mismo día puede tener más de una beca activa.
 BECAS = [
-    {"nombre": "Stars",         "desc": 40, "desde": "2026-07-01", "hasta": "2026-07-05"},
-    {"nombre": "New Skills",    "desc": 40, "desde": "2026-07-06", "hasta": "2026-07-26"},
-    {"nombre": "Masterclasses", "desc": 60, "desde": "2026-07-06", "hasta": "2026-07-19"},
-    {"nombre": "Pretemporada",  "desc": 50, "desde": "2026-07-27", "hasta": "2026-08-09"},
+    {"nombre": "Stars",               "desc": 40, "desde": "2026-07-01", "hasta": "2026-07-05"},
+    {"nombre": "New Skills",          "desc": 40, "desde": "2026-07-06", "hasta": "2026-07-26"},
+    {"nombre": "Masterclasses",       "desc": 60, "desde": "2026-07-06", "hasta": "2026-07-19"},
+    {"nombre": "Pretemporada",        "desc": 50, "desde": "2026-07-27", "hasta": "2026-08-09"},
+    {"nombre": "Inicio de temporada", "desc": 40, "desde": "2026-08-10", "hasta": "2026-08-16"},
 ]
 
 
