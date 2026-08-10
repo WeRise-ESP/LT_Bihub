@@ -1867,6 +1867,9 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "pais":         r.get("pais") or "Sin datos",
             "mercado":      resolve_mercado(r.get("pais") or "Sin datos"),
             "fuente":       r.get("fuente") or "Sin datos",
+            # Campaña que captó al comprador, para poder cruzar ventas con leads
+            "camp_original": r.get("camp_original") or "Sin campaña",
+            "camp_reciente": r.get("camp_reciente") or "Sin campaña",
             "importe":      float(r.get("importe") or 0.0),
             "descuento":    float(r.get("descuento") or 0.0),
             "pct_descuento": _pct_descuento(r.get("importe"), r.get("descuento")),
@@ -2401,7 +2404,7 @@ def main():
                 df_ventas = df_ventas[df_ventas["mercado"].isin(filtro_mercado)]
             if filtro_pais:
                 df_ventas = df_ventas[df_ventas["pais"].isin(filtro_pais)]
-        _render_ventas_page(df_ventas, periodo_txt, fi, ff)
+        _render_ventas_page(df_ventas, periodo_txt, fi, ff, df)
         return
 
     if pagina == "📅 Semanal y Becas":
@@ -4001,7 +4004,7 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
     )
 
 
-def _render_ventas_page(dv, periodo_txt, fi, ff):
+def _render_ventas_page(dv, periodo_txt, fi, ff, dc=None):
     """Página de Ventas y Facturación: qué se vende, a quién y por cuánto."""
     st.markdown("## 💶 Ventas y Facturación")
     st.caption(
@@ -4278,7 +4281,124 @@ def _render_ventas_page(dv, periodo_txt, fi, ff):
         )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 5. Ranking de programas
+    # 5. Conversión por campaña
+    # ══════════════════════════════════════════════════════════════════════════
+    if dc is not None and not dc.empty and "camp_original" in dv.columns:
+        st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                    unsafe_allow_html=True)
+        st.markdown("### 🎯 Conversión por campaña")
+        st.caption(
+            "Cuántos de los leads que trajo cada campaña acaban comprando. "
+            "Ojo a la diferencia entre las dos columnas de venta, que no miden "
+            "lo mismo:  \n"
+            "• **Leads con compra** — de los leads **entrados** en el rango, "
+            "cuántos han comprado ya. Es la conversión de la campaña.  \n"
+            "• **Ventas (cierre)** — compras **cerradas** en el rango, aunque el "
+            "lead entrara antes. Es la facturación del rango."
+        )
+
+        _camp_l = "camp_original"
+        _leads = (dc.groupby(_camp_l)
+                  .agg(Leads=("email", "count"),
+                       Compradores=("lead_status",
+                                    lambda x: int((x == "Negocio ganado").sum())))
+                  .reset_index())
+        _vent = (dv.groupby("camp_original")
+                 .agg(Ventas=("deal_id", "count"), Facturacion=("importe", "sum"))
+                 .reset_index().rename(columns={"camp_original": _camp_l}))
+        tc = _leads.merge(_vent, on=_camp_l, how="outer").fillna(0)
+        for c in ("Leads", "Compradores", "Ventas"):
+            tc[c] = tc[c].astype(int)
+        # .where en vez de replace(0, pd.NA): así la columna sigue siendo
+        # numérica y se puede redondear y formatear.
+        tc["% Conversión"] = ((tc["Compradores"] / tc["Leads"] * 100)
+                              .where(tc["Leads"] > 0, 0.0).round(2))
+        tc["Ticket medio"] = ((tc["Facturacion"] / tc["Ventas"])
+                              .where(tc["Ventas"] > 0, 0.0).round(0))
+        tc = tc.rename(columns={_camp_l: "Campaña", "Facturacion": "Facturación"})
+
+        _f1, _f2 = st.columns([1, 1])
+        with _f1:
+            _min_leads = st.number_input(
+                "Mínimo de leads para aparecer", min_value=0, value=10, step=5,
+                key="ventas_camp_min",
+                help="Las campañas con muy pocos leads dan porcentajes de "
+                     "conversión engañosos (1 de 2 leads = 50 %).")
+        with _f2:
+            _orden = st.radio("Ordenar por", ["Facturación", "% Conversión", "Leads"],
+                              horizontal=True, key="ventas_camp_orden")
+
+        tcf = tc[(tc["Leads"] >= _min_leads) | (tc["Ventas"] > 0)]
+        tcf = tcf.sort_values(_orden, ascending=False)
+
+        _tot = pd.DataFrame([{
+            "Campaña": "TOTAL", "Leads": int(tc["Leads"].sum()),
+            "Compradores": int(tc["Compradores"].sum()),
+            "% Conversión": round(tc["Compradores"].sum() / tc["Leads"].sum() * 100, 2)
+                            if tc["Leads"].sum() else 0.0,
+            "Ventas": int(tc["Ventas"].sum()),
+            "Facturación": float(tc["Facturación"].sum()),
+            "Ticket medio": round(tc["Facturación"].sum() / tc["Ventas"].sum(), 0)
+                            if tc["Ventas"].sum() else 0.0,
+        }])
+        _show = pd.concat([tcf, _tot], ignore_index=True)
+
+        st.dataframe(
+            _show[["Campaña", "Leads", "Compradores", "% Conversión",
+                   "Ventas", "Facturación", "Ticket medio"]]
+            .style.background_gradient(subset=["Leads"], cmap="Blues")
+            .background_gradient(subset=["% Conversión"], cmap="Greens", vmin=0, vmax=5)
+            .background_gradient(subset=["Facturación"], cmap="YlOrBr")
+            .format({"Facturación": "{:,.0f} €", "Ticket medio": "{:,.0f} €",
+                     "% Conversión": "{:.2f}%"}),
+            use_container_width=True, hide_index=True,
+            height=min(560, len(_show) * 36 + 40),
+            column_config={
+                "Campaña": st.column_config.TextColumn(width="large"),
+                "Compradores": st.column_config.NumberColumn(
+                    "Leads con compra", width="small",
+                    help="Leads entrados en el rango que ya han comprado."),
+                "Ventas": st.column_config.NumberColumn(
+                    "Ventas (cierre)", width="small",
+                    help="Compras cerradas en el rango, entrara el lead cuando "
+                         "entrara."),
+            },
+        )
+
+        _graf = tcf.head(15)
+        if not _graf.empty:
+            g1, g2 = st.columns(2)
+            with g1:
+                fig = px.bar(_graf.sort_values("% Conversión"), x="% Conversión",
+                             y="Campaña", orientation="h", text="% Conversión",
+                             title="Conversión de lead a compra por campaña",
+                             color="% Conversión",
+                             color_continuous_scale=[BARCA["line2"], BARCA["gold"],
+                                                     BARCA["blue_ink"]])
+                fig.update_traces(texttemplate="%{text:.2f}%")
+                fig.update_layout(coloraxis_showscale=False,
+                                  yaxis=dict(categoryorder="total ascending"))
+                barca_layout(fig, max(360, len(_graf) * 28 + 130))
+                st.plotly_chart(fig, use_container_width=True)
+            with g2:
+                fig = px.bar(_graf.sort_values("Facturación"), x="Facturación",
+                             y="Campaña", orientation="h", text="Facturación",
+                             title="Facturación por campaña",
+                             color_discrete_sequence=[BARCA["gold"]])
+                fig.update_traces(texttemplate="%{text:,.0f} €")
+                fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+                barca_layout(fig, max(360, len(_graf) * 28 + 130))
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.download_button(
+            "⬇️ Descargar conversión por campaña (CSV)",
+            data=_show.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"conversion_campana_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_ventas_campana",
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. Ranking de programas
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
                 unsafe_allow_html=True)
