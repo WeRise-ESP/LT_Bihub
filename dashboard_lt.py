@@ -4298,15 +4298,40 @@ def _render_ventas_page(dv, periodo_txt, fi, ff, dc=None):
         )
 
         _camp_l = "camp_original"
-        _leads = (dc.groupby(_camp_l)
+
+        # Filtro de fuente propio de esta sección: permite comparar campañas de
+        # un mismo canal sin tener que cambiar el filtro global del panel.
+        _fu_opts = sorted(set(dc["fuente"].dropna()) | set(dv["fuente"].dropna()))
+        _sanea_estado("ventas_camp_fuente", _fu_opts, multi=True)
+        _fu_sel = st.multiselect(
+            "Fuente de tráfico", _fu_opts, key="ventas_camp_fuente",
+            placeholder="Todas las fuentes",
+            help="Acota leads y ventas a una fuente. Útil para comparar "
+                 "campañas de pago entre sí sin que las mezcle el tráfico "
+                 "directo o el orgánico.")
+
+        _dc_c = dc[dc["fuente"].isin(_fu_sel)] if _fu_sel else dc
+        _dv_c = dv[dv["fuente"].isin(_fu_sel)] if _fu_sel else dv
+
+        if _dc_c.empty and _dv_c.empty:
+            st.info("No hay leads ni ventas de esa fuente en el período.")
+
+        _leads = (_dc_c.groupby(_camp_l)
                   .agg(Leads=("email", "count"),
                        Compradores=("lead_status",
-                                    lambda x: int((x == "Negocio ganado").sum())))
+                                    lambda x: int((x == "Negocio ganado").sum())),
+                       Fuente=("fuente", lambda s: s.mode().iat[0]
+                               if not s.mode().empty else "Sin datos"))
                   .reset_index())
-        _vent = (dv.groupby("camp_original")
-                 .agg(Ventas=("deal_id", "count"), Facturacion=("importe", "sum"))
+        _vent = (_dv_c.groupby("camp_original")
+                 .agg(Ventas=("deal_id", "count"), Facturacion=("importe", "sum"),
+                      _fu=("fuente", lambda s: s.mode().iat[0]
+                           if not s.mode().empty else "Sin datos"))
                  .reset_index().rename(columns={"camp_original": _camp_l}))
-        tc = _leads.merge(_vent, on=_camp_l, how="outer").fillna(0)
+        tc = _leads.merge(_vent, on=_camp_l, how="outer")
+        # La fuente puede venir de cualquiera de los dos lados
+        tc["Fuente"] = tc["Fuente"].fillna(tc["_fu"]).fillna("Sin datos")
+        tc = tc.drop(columns=["_fu"]).fillna(0)
         for c in ("Leads", "Compradores", "Ventas"):
             tc[c] = tc[c].astype(int)
         # .where en vez de replace(0, pd.NA): así la columna sigue siendo
@@ -4332,7 +4357,7 @@ def _render_ventas_page(dv, periodo_txt, fi, ff, dc=None):
         tcf = tcf.sort_values(_orden, ascending=False)
 
         _tot = pd.DataFrame([{
-            "Campaña": "TOTAL", "Leads": int(tc["Leads"].sum()),
+            "Campaña": "TOTAL", "Fuente": "", "Leads": int(tc["Leads"].sum()),
             "Compradores": int(tc["Compradores"].sum()),
             "% Conversión": round(tc["Compradores"].sum() / tc["Leads"].sum() * 100, 2)
                             if tc["Leads"].sum() else 0.0,
@@ -4344,7 +4369,7 @@ def _render_ventas_page(dv, periodo_txt, fi, ff, dc=None):
         _show = pd.concat([tcf, _tot], ignore_index=True)
 
         st.dataframe(
-            _show[["Campaña", "Leads", "Compradores", "% Conversión",
+            _show[["Campaña", "Fuente", "Leads", "Compradores", "% Conversión",
                    "Ventas", "Facturación", "Ticket medio"]]
             .style.background_gradient(subset=["Leads"], cmap="Blues")
             .background_gradient(subset=["% Conversión"], cmap="Greens", vmin=0, vmax=5)
@@ -4355,6 +4380,7 @@ def _render_ventas_page(dv, periodo_txt, fi, ff, dc=None):
             height=min(560, len(_show) * 36 + 40),
             column_config={
                 "Campaña": st.column_config.TextColumn(width="large"),
+                "Fuente": st.column_config.TextColumn(width="medium"),
                 "Compradores": st.column_config.NumberColumn(
                     "Leads con compra", width="small",
                     help="Leads entrados en el rango que ya han comprado."),
