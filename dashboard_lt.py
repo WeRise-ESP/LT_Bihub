@@ -5031,7 +5031,11 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
                 mat_p = pd.DataFrame(columns=["pais", "Ventas"])
 
             pais_table = leads_p.merge(mat_p, on="pais", how="outer").fillna(0)
+            # Los dos a int: el merge outer + fillna deja en float la columna
+            # que faltaba, y Streamlit pinta los float con 4 decimales
+            # ("120.0000"), que parecen cifras corruptas.
             pais_table["Ventas"] = pais_table["Ventas"].astype(int)
+            pais_table["Leads"]  = pais_table["Leads"].astype(int)
             pais_table["Tasa (%)"] = (
                 pais_table["Ventas"] / pais_table["Leads"] * 100
             ).round(1).where(pais_table["Leads"] > 0, 0)
@@ -5068,6 +5072,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
 
             fuente_table = leads_f.merge(mat_f, on="fuente", how="outer").fillna(0)
             fuente_table["Ventas"] = fuente_table["Ventas"].astype(int)
+            fuente_table["Leads"]  = fuente_table["Leads"].astype(int)
             fuente_table["Tasa (%)"] = (
                 fuente_table["Ventas"] / fuente_table["Leads"] * 100
             ).round(1).where(fuente_table["Leads"] > 0, 0)
@@ -5130,6 +5135,7 @@ def _render_conversion_page(df, df_ganados_prog, fi, ff):
 
          prog_pais = _prog_pais_leads.merge(_prog_pais_mat, on=["Programa", "pais"], how="outer").fillna(0)
          prog_pais["Ventas"] = prog_pais["Ventas"].astype(int)
+         prog_pais["Leads"]  = prog_pais["Leads"].astype(int)
          prog_pais["Tasa (%)"] = (
              prog_pais["Ventas"] / prog_pais["Leads"] * 100
          ).round(1).where(prog_pais["Leads"] > 0, 0)
