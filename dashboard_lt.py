@@ -1072,6 +1072,9 @@ BECAS = [
     {"nombre": "Masterclasses",       "desc": 60, "desde": "2026-07-06", "hasta": "2026-07-19"},
     {"nombre": "Pretemporada",        "desc": 50, "desde": "2026-07-27", "hasta": "2026-08-09"},
     {"nombre": "Inicio de temporada", "desc": 40, "desde": "2026-08-10", "hasta": "2026-08-16"},
+    {"nombre": "Joan Gamper Trophy", "desc": 50, "desde": "2026-08-17", "hasta": "2026-08-23"},
+    {"nombre": "Champions also start from scratch", "desc": 40, "desde": "2026-08-24", "hasta": "2026-08-31"},
+    {"nombre": "New course, new goals", "desc": 50, "desde": "2026-09-01", "hasta": "2026-09-14"},
 ]
 
 
