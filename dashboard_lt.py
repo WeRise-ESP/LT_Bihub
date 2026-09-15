@@ -1067,6 +1067,36 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
 # mantenerlos a mano aquí. Las fechas son inclusivas por los dos extremos.
 # Ojo: pueden SOLAPARSE (New Skills y Masterclasses convivieron del 6 al 19 de
 # julio), así que un mismo día puede tener más de una beca activa.
+# ── Landings de curso publicadas ──────────────────────────────────────────────
+# Todas las landings de HubSpot que hoy están PUBLICADAS y capturan lead
+# (una por curso, con el `pgm` en el hidden field del formulario). Se usa en la
+# tabla "Rendimiento por landing concreta" para reindexar y mostrar TODAS las
+# landings, incluidas las que en el período tienen 0 contactos — así se ven las
+# que no captan.
+# Se mantiene a mano; cuando se publique/despublique una landing, editar aquí.
+LANDINGS_LT_PGMS = [
+    "CE_0001",  # Barça Coach Academy: Introductory level
+    "CE_0007",  # Introducción a la Analítica Deportiva
+    "CE_0015",  # Analista Táctico de Fútbol
+    "CE_0021",  # Análisis Táctico Avanzado de Fútbol
+    "CE_0034",  # Sport psychology for athletes development
+    "CE_0040",  # Psicología para el Alto Rendimiento Deportivo
+    "CE_0042",  # Director General en Deportes
+    "CE_0044",  # Scouting de fútbol
+    "CE_0046",  # Data Science en Deportes de Equipo
+    "P_0007",   # Marketing Digital, Patrocinio y Comunicación
+    "P_0008",   # Nutrición Deportiva
+    "P_0009",   # Medicina en deportes de equipo
+    "P_0013",   # Fuerza y Acondicionamiento
+    "P_0015",   # Fuerza y Acondicionamiento para el Fútbol
+    "P_0020",   # Neurobiología y Psicología
+    "P_0022",   # Diploma Analista Táctico de Fútbol
+    "P_0023",   # Entrenador de Fútbol
+    "P_0026",   # Director General
+    "P_0027",   # Scouting y Análisis Táctico en Fútbol
+]
+
+
 BECAS = [
     {"nombre": "Stars",               "desc": 40, "desde": "2026-07-01", "hasta": "2026-07-05"},
     {"nombre": "New Skills",          "desc": 40, "desde": "2026-07-06", "hasta": "2026-07-26"},
@@ -3838,76 +3868,78 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         # ══════════════════════════════════════════════════════════════════════
         # 🎯 Rendimiento por landing concreta (dentro del canal "Landing")
         # ══════════════════════════════════════════════════════════════════════
-        # La comparativa global es injusta: hoy hay ~22 landings vs TODO el site
-        # (fcbarcelona.com). Aquí desglosamos por landing (identificada por el
-        # curso `pgm`) para ver qué landings concretas tiran de la conversión y
-        # cuáles no captan casi nada.
+        # Desglose por landing (identificada por el curso `pgm`). Mostramos
+        # TODAS las landings publicadas (LANDINGS_LT_PGMS), incluidas las que
+        # tienen 0 contactos en el período — para ver qué landings no captan.
         _dc_land = _dc_duelo[_dc_duelo["canal"] == "Landing"].copy()
+        _dc_land["_base"] = _dc_land["pgm"].apply(pgm_base) if not _dc_land.empty else pd.Series(dtype=str)
+        _cat_land = nombres_cursos()
 
-        if not _dc_land.empty:
-            _dc_land["_base"] = _dc_land["pgm"].apply(pgm_base)
-            _cat_land = nombres_cursos()
+        def _label_land(base):
+            if not base:
+                return "— (sin pgm)"
+            _n = _cat_land.get(base)
+            return f"{base} · {_n}" if _n else base
 
-            def _label_land(base):
-                if not base:
-                    return "— (sin pgm)"
-                _n = _cat_land.get(base)
-                return f"{base} · {_n}" if _n else base
+        # Universo de landings a mostrar: las publicadas + cualquier otro base
+        # que haya aparecido en el período (por si hay landings nuevas aún no
+        # añadidas a la constante).
+        _bases_universo = list(dict.fromkeys(
+            list(LANDINGS_LT_PGMS) +
+            (list(_dc_land["_base"].dropna().unique()) if not _dc_land.empty else [])
+        ))
 
-            _por_land = (_dc_land.groupby("_base")
-                         .agg(Contactos=("email", "count"),
-                              Activados=("lead_activado",
-                                         lambda s: int((s == "Activado").sum())),
-                              Ganados=("lead_status",
-                                       lambda s: int((s == "Negocio ganado").sum())))
-                         .reset_index())
-            _por_land[["Contactos", "Activados", "Ganados"]] = \
-                _por_land[["Contactos", "Activados", "Ganados"]].astype(int)
-            _por_land["% Activación"] = (_por_land["Activados"] /
-                                         _por_land["Contactos"].replace(0, pd.NA) * 100).round(1)
-            _por_land["% Conversión"] = (_por_land["Ganados"] /
-                                         _por_land["Contactos"].replace(0, pd.NA) * 100).round(2)
-            _por_land["Landing"] = _por_land["_base"].apply(_label_land)
-            _por_land = (_por_land[["Landing", "Contactos", "Activados", "% Activación",
-                                    "Ganados", "% Conversión"]]
-                         .sort_values("Contactos", ascending=False))
+        _por_land = (_dc_land.groupby("_base")
+                     .agg(Contactos=("email", "count"),
+                          Activados=("lead_activado",
+                                     lambda s: int((s == "Activado").sum())),
+                          Ganados=("lead_status",
+                                   lambda s: int((s == "Negocio ganado").sum())))
+                     .reindex(_bases_universo).fillna(0).reset_index()
+                     .rename(columns={"index": "_base"}))
+        _por_land[["Contactos", "Activados", "Ganados"]] = \
+            _por_land[["Contactos", "Activados", "Ganados"]].astype(int)
 
-            st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:24px 0 18px">""",
-                        unsafe_allow_html=True)
-            st.markdown("### 🎯 Rendimiento por landing concreta")
-            st.caption(
-                f"Hoy hay ~22 landings publicadas frente a TODO el site "
-                f"({_n_web:,} contactos por web). Aqu&iacute; desglosamos las "
-                f"landings una a una (identificadas por el `pgm` del contacto, "
-                f"cada landing corresponde a un curso) para ver cu&aacute;les "
-                f"tiran de verdad. Ordenado por contactos.".replace(",", ".")
-            )
-            st.dataframe(
-                _por_land.rename(columns={"Ganados": "Negocio ganado"})
-                .style
-                .background_gradient(subset=["Contactos"], cmap="Blues")
-                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
-                .background_gradient(subset=["% Conversión"], cmap="Purples")
-                .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
-                         "Negocio ganado": "{:,.0f}",
-                         "% Activación": "{:.1f}%",
-                         "% Conversión": "{:.2f}%"}),
-                use_container_width=True, hide_index=True,
-                height=min(560, len(_por_land) * 36 + 60),
-            )
-            st.caption(
-                f"Total del canal Landing: **{_n_land:,} contactos** "
-                f"({_por_land['_base'].apply(lambda x: 1).sum() if False else len(_por_land)} "
-                f"landings distintas detectadas)."
-                .replace(",", ".")
-            )
-            st.download_button(
-                "⬇️ Descargar desglose por landing (CSV)",
-                data=_por_land.to_csv(index=False, encoding="utf-8-sig"),
-                file_name=f"landings_desglose_{fi}_{ff}.csv",
-                mime="text/csv", key="dl_landings_desglose",
-            )
-            st.markdown("<br>", unsafe_allow_html=True)
+        # Evita el TypeError con .replace(0, pd.NA) cuando hay 0s en int64.
+        _ctos_land = _por_land["Contactos"].astype("float64").replace(0, np.nan)
+        _por_land["% Activación"] = (_por_land["Activados"] / _ctos_land * 100).round(1).fillna(0)
+        _por_land["% Conversión"] = (_por_land["Ganados"] / _ctos_land * 100).round(2).fillna(0)
+        _por_land["Landing"] = _por_land["_base"].apply(_label_land)
+        _por_land = (_por_land[["Landing", "Contactos", "Activados", "% Activación",
+                                "Ganados", "% Conversión"]]
+                     .sort_values("Contactos", ascending=False))
+
+        st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:24px 0 18px">""",
+                    unsafe_allow_html=True)
+        st.markdown("### 🎯 Rendimiento por landing concreta")
+        _n_activas = int((_por_land["Contactos"] > 0).sum())
+        _n_total_land = len(_por_land)
+        st.caption(
+            f"Todas las **{_n_total_land} landings publicadas** con formulario "
+            f"de captación. En este período **{_n_activas}** han captado al "
+            f"menos 1 lead y **{_n_total_land - _n_activas}** no han captado "
+            f"ninguno. Ordenado por contactos."
+        )
+        st.dataframe(
+            _por_land.rename(columns={"Ganados": "Negocio ganado"})
+            .style
+            .background_gradient(subset=["Contactos"], cmap="Blues")
+            .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+            .background_gradient(subset=["% Conversión"], cmap="Purples")
+            .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                     "Negocio ganado": "{:,.0f}",
+                     "% Activación": "{:.1f}%",
+                     "% Conversión": "{:.2f}%"}),
+            use_container_width=True, hide_index=True,
+            height=min(720, len(_por_land) * 36 + 60),
+        )
+        st.download_button(
+            "⬇️ Descargar desglose por landing (CSV)",
+            data=_por_land.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"landings_desglose_{fi}_{ff}.csv",
+            mime="text/csv", key="dl_landings_desglose",
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Helper de tabla cruzada (canal y país contra tipo de curso)
