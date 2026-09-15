@@ -3622,12 +3622,11 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
     # ══════════════════════════════════════════════════════════════════════════
     # 🎯 Destino del anuncio — dónde acaban los leads
     # ══════════════════════════════════════════════════════════════════════════
-    # Los anuncios (Meta / Google) pueden llevar el tráfico a 4 sitios distintos.
+    # Los anuncios (Meta / Google) pueden llevar el tráfico a 3 sitios reales.
     # Aquí los cruzamos con el canal real por el que entró el lead para poder
     # comparar volumen y conversión de cada tipo de destino:
     #   - 📱 Meta Lead Ads (nativo)      → form dentro de Facebook/Instagram
     #   - 🎯 Landing → Programa           → landing individual de curso (form _Landing)
-    #   - 🗂️ Landing → Especialidad       → hub sin form (leads = 0 hoy)
     #   - 🌐 Web (fcbarcelona.com)        → formulario web del site
     _MAP_DESTINO = {
         "Facebook Lead Ads":         "📱 Meta Lead Ads (nativo)",
@@ -3637,13 +3636,11 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
     _ORDEN_DESTINO = [
         "📱 Meta Lead Ads (nativo)",
         "🎯 Landing → Programa",
-        "🗂️ Landing → Especialidad",
         "🌐 Web (fcbarcelona.com)",
     ]
     _COLOR_DESTINO = {
         "📱 Meta Lead Ads (nativo)":  BARCA["blue"],
         "🎯 Landing → Programa":      BARCA["garnet"],
-        "🗂️ Landing → Especialidad":  BARCA["blue_deep"],
         "🌐 Web (fcbarcelona.com)":   BARCA["gold"],
     }
 
@@ -3657,7 +3654,7 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         st.markdown("### 🎯 Rendimiento por destino del anuncio")
         st.caption(
             "Cuando lanzas anuncios en Meta o Google, los usuarios acaban en uno "
-            "de estos 4 sitios. Esta tabla te dice cuántos leads llegan por cada "
+            "de estos 3 sitios. Esta tabla te dice cuántos leads llegan por cada "
             "destino y cuáles convierten mejor — así puedes decidir dónde meter "
             "más o menos budget."
         )
@@ -3699,11 +3696,10 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                 use_container_width=True, hide_index=True,
             )
             st.caption(
-                "**🗂️ Landing → Especialidad** aparece con 0 porque las 6 "
-                "landings hub (Analítica / Medicina / Entrenamiento) **NO "
-                "tienen formulario** — son páginas de navegación que redirigen "
-                "a las landings de programa. Si les añadieras un form, aquí "
-                "verías qué % del budget acaba capturando lead ahí."
+                "Las 6 landings de **Especialidad** (Analítica / Medicina / "
+                "Entrenamiento) no aparecen porque son hubs sin formulario — "
+                "solo redirigen a las landings de programa, donde el lead sí "
+                "se captura."
             )
             st.download_button(
                 "⬇️ Descargar destinos (CSV)",
