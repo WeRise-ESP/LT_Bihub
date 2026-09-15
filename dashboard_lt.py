@@ -3619,11 +3619,110 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                 st.plotly_chart(fig, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 🥊 Landing vs Formulario web — ¿qué canal digital convierte mejor?
+    # 🎯 Destino del anuncio — dónde acaban los leads
     # ══════════════════════════════════════════════════════════════════════════
-    # Comparamos SOLO los dos canales digitales de captación propia:
-    # HubSpot landings vs formulario web del site (fcbarcelona.com). Facebook
-    # Lead Ads queda fuera porque es un canal externo pagado.
+    # Los anuncios (Meta / Google) pueden llevar el tráfico a 4 sitios distintos.
+    # Aquí los cruzamos con el canal real por el que entró el lead para poder
+    # comparar volumen y conversión de cada tipo de destino:
+    #   - 📱 Meta Lead Ads (nativo)      → form dentro de Facebook/Instagram
+    #   - 🎯 Landing → Programa           → landing individual de curso (form _Landing)
+    #   - 🗂️ Landing → Especialidad       → hub sin form (leads = 0 hoy)
+    #   - 🌐 Web (fcbarcelona.com)        → formulario web del site
+    _MAP_DESTINO = {
+        "Facebook Lead Ads":         "📱 Meta Lead Ads (nativo)",
+        "Landing":                    "🎯 Landing → Programa",
+        "Formulario web Low Ticket": "🌐 Web (fcbarcelona.com)",
+    }
+    _ORDEN_DESTINO = [
+        "📱 Meta Lead Ads (nativo)",
+        "🎯 Landing → Programa",
+        "🗂️ Landing → Especialidad",
+        "🌐 Web (fcbarcelona.com)",
+    ]
+    _COLOR_DESTINO = {
+        "📱 Meta Lead Ads (nativo)":  BARCA["blue"],
+        "🎯 Landing → Programa":      BARCA["garnet"],
+        "🗂️ Landing → Especialidad":  BARCA["blue_deep"],
+        "🌐 Web (fcbarcelona.com)":   BARCA["gold"],
+    }
+
+    dc = dc.copy()
+    dc["destino"] = dc["canal"].map(_MAP_DESTINO).fillna("(otro)")
+
+    _dc_dest = dc[dc["destino"].isin(_ORDEN_DESTINO)]
+    if not _dc_dest.empty:
+        st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                    unsafe_allow_html=True)
+        st.markdown("### 🎯 Rendimiento por destino del anuncio")
+        st.caption(
+            "Cuando lanzas anuncios en Meta o Google, los usuarios acaban en uno "
+            "de estos 4 sitios. Esta tabla te dice cuántos leads llegan por cada "
+            "destino y cuáles convierten mejor — así puedes decidir dónde meter "
+            "más o menos budget."
+        )
+
+        _rd = (_dc_dest.groupby("destino")
+               .agg(Contactos=("email", "count"),
+                    Activados=("lead_activado",
+                               lambda s: int((s == "Activado").sum())),
+                    Ganados=("lead_status",
+                             lambda s: int((s == "Negocio ganado").sum())))
+               .reindex(_ORDEN_DESTINO).fillna(0).reset_index())
+        _rd[["Contactos", "Activados", "Ganados"]] = \
+            _rd[["Contactos", "Activados", "Ganados"]].astype(int)
+        _total_dest = _rd["Contactos"].sum()
+        _rd["% Contactos"] = (_rd["Contactos"] / _total_dest * 100).round(1) if _total_dest else 0.0
+        _rd["% Activación"] = (_rd["Activados"] /
+                               _rd["Contactos"].replace(0, pd.NA) * 100).round(1)
+        _rd["% Conversión"] = (_rd["Ganados"] /
+                               _rd["Contactos"].replace(0, pd.NA) * 100).round(2)
+
+        rd1, rd2 = st.columns([1.4, 1.2])
+        with rd1:
+            st.dataframe(
+                _rd.rename(columns={"destino": "Destino del anuncio",
+                                    "Ganados": "Negocio ganado"})
+                [["Destino del anuncio", "Contactos", "% Contactos",
+                  "Activados", "% Activación",
+                  "Negocio ganado", "% Conversión"]]
+                .style
+                .background_gradient(subset=["Contactos"], cmap="Blues")
+                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+                .background_gradient(subset=["% Conversión"], cmap="Purples")
+                .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                         "Negocio ganado": "{:,.0f}",
+                         "% Contactos": "{:.1f}%",
+                         "% Activación": "{:.1f}%",
+                         "% Conversión": "{:.2f}%"}),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "**🗂️ Landing → Especialidad** aparece con 0 porque las 6 "
+                "landings hub (Analítica / Medicina / Entrenamiento) **NO "
+                "tienen formulario** — son páginas de navegación que redirigen "
+                "a las landings de programa. Si les añadieras un form, aquí "
+                "verías qué % del budget acaba capturando lead ahí."
+            )
+            st.download_button(
+                "⬇️ Descargar destinos (CSV)",
+                data=_rd.to_csv(index=False, encoding="utf-8-sig"),
+                file_name=f"destinos_anuncios_{fi}_{ff}.csv",
+                mime="text/csv", key="dl_destinos",
+            )
+        with rd2:
+            fig = px.bar(_rd, x="destino", y="Contactos", color="destino",
+                         text="Contactos",
+                         title="Volumen por destino",
+                         color_discrete_map=_COLOR_DESTINO,
+                         category_orders={"destino": _ORDEN_DESTINO})
+            fig.update_traces(texttemplate="%{text:,}", textposition="outside")
+            fig.update_layout(showlegend=False, xaxis_title="",
+                              xaxis_tickangle=-15)
+            barca_layout(fig, 360)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
     _CANALES_DUELO = ["Landing", "Formulario web Low Ticket"]
     _dc_duelo = dc[dc["canal"].isin(_CANALES_DUELO)]
 
