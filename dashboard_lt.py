@@ -11,6 +11,7 @@ Colores oficiales FC Barcelona.
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, datetime, timedelta, timezone
@@ -3672,10 +3673,11 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
             _rd[["Contactos", "Activados", "Ganados"]].astype(int)
         _total_dest = _rd["Contactos"].sum()
         _rd["% Contactos"] = (_rd["Contactos"] / _total_dest * 100).round(1) if _total_dest else 0.0
-        _rd["% Activación"] = (_rd["Activados"] /
-                               _rd["Contactos"].replace(0, pd.NA) * 100).round(1)
-        _rd["% Conversión"] = (_rd["Ganados"] /
-                               _rd["Contactos"].replace(0, pd.NA) * 100).round(2)
+        # Ojo: `.replace(0, pd.NA)` en un int64 con ceros lo convierte a object
+        # y luego `.round()` peta. Con np.nan se mantiene float64.
+        _ctos_safe = _rd["Contactos"].astype("float64").replace(0, np.nan)
+        _rd["% Activación"] = (_rd["Activados"] / _ctos_safe * 100).round(1).fillna(0)
+        _rd["% Conversión"] = (_rd["Ganados"] / _ctos_safe * 100).round(2).fillna(0)
 
         rd1, rd2 = st.columns([1.4, 1.2])
         with rd1:
