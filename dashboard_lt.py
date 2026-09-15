@@ -1068,32 +1068,39 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
 # Ojo: pueden SOLAPARSE (New Skills y Masterclasses convivieron del 6 al 19 de
 # julio), así que un mismo día puede tener más de una beca activa.
 # ── Landings de curso publicadas ──────────────────────────────────────────────
-# Todas las landings de HubSpot que hoy están PUBLICADAS y capturan lead
-# (una por curso, con el `pgm` en el hidden field del formulario). Se usa en la
-# tabla "Rendimiento por landing concreta" para reindexar y mostrar TODAS las
-# landings, incluidas las que en el período tienen 0 contactos — así se ven las
-# que no captan.
+# 25 landings publicadas hoy en HubSpot con formulario de captación. Se
+# diferencian por idioma (mismo curso puede tener landing ES y EN por separado).
+# Se usa en la tabla "Rendimiento por landing concreta" para reindexar y
+# mostrar TODAS las landings, incluidas las que en el período no captan lead.
 # Se mantiene a mano; cuando se publique/despublique una landing, editar aquí.
 LANDINGS_LT_PGMS = [
-    "CE_0001",  # Barça Coach Academy: Introductory level
-    "CE_0007",  # Introducción a la Analítica Deportiva
-    "CE_0015",  # Analista Táctico de Fútbol
-    "CE_0021",  # Análisis Táctico Avanzado de Fútbol
-    "CE_0034",  # Sport psychology for athletes development
-    "CE_0040",  # Psicología para el Alto Rendimiento Deportivo
-    "CE_0042",  # Director General en Deportes
-    "CE_0044",  # Scouting de fútbol
-    "CE_0046",  # Data Science en Deportes de Equipo
-    "P_0007",   # Marketing Digital, Patrocinio y Comunicación
-    "P_0008",   # Nutrición Deportiva
-    "P_0009",   # Medicina en deportes de equipo
-    "P_0013",   # Fuerza y Acondicionamiento
-    "P_0015",   # Fuerza y Acondicionamiento para el Fútbol
-    "P_0020",   # Neurobiología y Psicología
-    "P_0022",   # Diploma Analista Táctico de Fútbol
-    "P_0023",   # Entrenador de Fútbol
-    "P_0026",   # Director General
-    "P_0027",   # Scouting y Análisis Táctico en Fútbol
+    # ES (17)
+    "CE_0007_ES",  # Introducción a la Analítica Deportiva
+    "CE_0015_ES",  # Analista Táctico de Fútbol
+    "CE_0021_ES",  # Análisis Táctico Avanzado de Fútbol
+    "CE_0040_ES",  # Psicología para el Alto Rendimiento Deportivo
+    "CE_0042_ES",  # Director General en Deportes
+    "CE_0044_ES",  # Scouting de fútbol
+    "CE_0046_ES",  # Data Science en Deportes de Equipo
+    "P_0007_ES",   # Marketing Digital, Patrocinio y Comunicación
+    "P_0008_ES",   # Nutrición Deportiva
+    "P_0009_ES",   # Medicina en deportes de equipo
+    "P_0013_ES",   # Fuerza y Acondicionamiento
+    "P_0015_ES",   # Fuerza y Acondicionamiento para el Fútbol
+    "P_0020_ES",   # Neurobiología y Psicología
+    "P_0022_ES",   # Diploma Analista Táctico de Fútbol
+    "P_0023_ES",   # Entrenador de Fútbol
+    "P_0026_ES",   # Director General
+    "P_0027_ES",   # Scouting y Análisis Táctico en Fútbol
+    # EN (8)
+    "CE_0001_EN",  # Barça Coach Academy: Introductory level
+    "CE_0007_EN",  # Introduction to sports analytics
+    "CE_0015_EN",  # Football tactical analyst
+    "CE_0034_EN",  # Sport psychology for athletes development
+    "CE_0040_EN",  # Psychology for high performance sports
+    "CE_0046_EN",  # Data Science in Team Sports
+    "P_0007_EN",   # Digital marketing, sponsorship and communication
+    "P_0023_EN",   # Football coach
 ]
 
 
@@ -3868,60 +3875,84 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         # ══════════════════════════════════════════════════════════════════════
         # 🎯 Rendimiento por landing concreta (dentro del canal "Landing")
         # ══════════════════════════════════════════════════════════════════════
-        # Desglose por landing (identificada por el curso `pgm`). Mostramos
-        # TODAS las landings publicadas (LANDINGS_LT_PGMS), incluidas las que
-        # tienen 0 contactos en el período — para ver qué landings no captan.
+        # Desglose por landing (identificada por el `pgm` completo, con
+        # idioma). Mostramos las 25 landings publicadas (LANDINGS_LT_PGMS),
+        # incluidas las que en el período no captan lead.
         _dc_land = _dc_duelo[_dc_duelo["canal"] == "Landing"].copy()
-        _dc_land["_base"] = _dc_land["pgm"].apply(pgm_base) if not _dc_land.empty else pd.Series(dtype=str)
+        # pgm normalizado a upper para casar con la constante (viene ya en upper
+        # de HubSpot, pero por si acaso).
+        if not _dc_land.empty:
+            _dc_land["_pgm_u"] = _dc_land["pgm"].fillna("").str.upper().str.strip()
         _cat_land = nombres_cursos()
 
-        def _label_land(base):
-            if not base:
+        def _lang_from_pgm(pgm_full):
+            if not pgm_full:
+                return "—"
+            m = re.search(r"_(ES|EN|CA)$", pgm_full)
+            return m.group(1) if m else "—"
+
+        def _label_land(pgm_full):
+            if not pgm_full:
                 return "— (sin pgm)"
+            base = pgm_base(pgm_full)
             _n = _cat_land.get(base)
             return f"{base} · {_n}" if _n else base
 
-        # Universo de landings a mostrar: las publicadas + cualquier otro base
-        # que haya aparecido en el período (por si hay landings nuevas aún no
-        # añadidas a la constante).
-        _bases_universo = list(dict.fromkeys(
+        # Universo: las 25 publicadas + cualquier otro pgm aparecido en el
+        # período (por si hay landings nuevas aún no añadidas a la constante).
+        _pgms_universo = list(dict.fromkeys(
             list(LANDINGS_LT_PGMS) +
-            (list(_dc_land["_base"].dropna().unique()) if not _dc_land.empty else [])
+            (list(_dc_land["_pgm_u"].dropna().unique()) if not _dc_land.empty else [])
         ))
+        _pgms_universo = [p for p in _pgms_universo if p]
 
-        _por_land = (_dc_land.groupby("_base")
+        _por_land = (_dc_land.groupby("_pgm_u")
                      .agg(Contactos=("email", "count"),
                           Activados=("lead_activado",
                                      lambda s: int((s == "Activado").sum())),
                           Ganados=("lead_status",
                                    lambda s: int((s == "Negocio ganado").sum())))
-                     .reindex(_bases_universo).fillna(0).reset_index()
-                     .rename(columns={"index": "_base"}))
+                     .reindex(_pgms_universo).fillna(0).reset_index()
+                     .rename(columns={"_pgm_u": "pgm_full"}))
         _por_land[["Contactos", "Activados", "Ganados"]] = \
             _por_land[["Contactos", "Activados", "Ganados"]].astype(int)
 
-        # Evita el TypeError con .replace(0, pd.NA) cuando hay 0s en int64.
         _ctos_land = _por_land["Contactos"].astype("float64").replace(0, np.nan)
         _por_land["% Activación"] = (_por_land["Activados"] / _ctos_land * 100).round(1).fillna(0)
         _por_land["% Conversión"] = (_por_land["Ganados"] / _ctos_land * 100).round(2).fillna(0)
-        _por_land["Landing"] = _por_land["_base"].apply(_label_land)
-        _por_land = (_por_land[["Landing", "Contactos", "Activados", "% Activación",
-                                "Ganados", "% Conversión"]]
-                     .sort_values("Contactos", ascending=False))
+        _por_land["Landing"] = _por_land["pgm_full"].apply(_label_land)
+        _por_land["Idioma"] = _por_land["pgm_full"].apply(_lang_from_pgm)
+        _por_land = (_por_land[["Landing", "Idioma", "Contactos", "Activados",
+                                "% Activación", "Ganados", "% Conversión"]]
+                     .sort_values(["Contactos", "Idioma"], ascending=[False, True]))
 
         st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:24px 0 18px">""",
                     unsafe_allow_html=True)
         st.markdown("### 🎯 Rendimiento por landing concreta")
         _n_activas = int((_por_land["Contactos"] > 0).sum())
         _n_total_land = len(_por_land)
+        _n_es = int((_por_land["Idioma"] == "ES").sum())
+        _n_en = int((_por_land["Idioma"] == "EN").sum())
         st.caption(
-            f"Todas las **{_n_total_land} landings publicadas** con formulario "
-            f"de captación. En este período **{_n_activas}** han captado al "
-            f"menos 1 lead y **{_n_total_land - _n_activas}** no han captado "
-            f"ninguno. Ordenado por contactos."
+            f"Las **{_n_total_land} landings publicadas** ({_n_es} ES · "
+            f"{_n_en} EN) con formulario de captación. En este período "
+            f"**{_n_activas}** han captado al menos 1 lead y "
+            f"**{_n_total_land - _n_activas}** no han captado ninguno. "
+            f"Ordenado por contactos."
         )
+
+        # Filtro rápido de idioma
+        _f_idioma = st.multiselect(
+            "Filtrar por idioma",
+            options=["ES", "EN", "—"],
+            default=[],
+            key=f"land_lang_filter_{fi}_{ff}",
+            help="Vacío = todas."
+        )
+        _mostrar = _por_land if not _f_idioma else _por_land[_por_land["Idioma"].isin(_f_idioma)]
+
         st.dataframe(
-            _por_land.rename(columns={"Ganados": "Negocio ganado"})
+            _mostrar.rename(columns={"Ganados": "Negocio ganado"})
             .style
             .background_gradient(subset=["Contactos"], cmap="Blues")
             .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
@@ -3931,7 +3962,7 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                      "% Activación": "{:.1f}%",
                      "% Conversión": "{:.2f}%"}),
             use_container_width=True, hide_index=True,
-            height=min(720, len(_por_land) * 36 + 60),
+            height=min(900, len(_mostrar) * 36 + 60),
         )
         st.download_button(
             "⬇️ Descargar desglose por landing (CSV)",
