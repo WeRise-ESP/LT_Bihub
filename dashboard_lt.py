@@ -3619,6 +3619,126 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
                 st.plotly_chart(fig, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # 🥊 Landing vs Formulario web — ¿qué canal digital convierte mejor?
+    # ══════════════════════════════════════════════════════════════════════════
+    # Comparamos SOLO los dos canales digitales de captación propia:
+    # HubSpot landings vs formulario web del site (fcbarcelona.com). Facebook
+    # Lead Ads queda fuera porque es un canal externo pagado.
+    _CANALES_DUELO = ["Landing", "Formulario web Low Ticket"]
+    _dc_duelo = dc[dc["canal"].isin(_CANALES_DUELO)]
+
+    if not _dc_duelo.empty and _dc_duelo["canal"].nunique() >= 1:
+        st.markdown(f"""<hr style="border:1px solid {BARCA['line']};margin:32px 0 20px">""",
+                    unsafe_allow_html=True)
+        st.markdown("### 🥊 Landing HubSpot vs Formulario web (fcbarcelona.com)")
+        st.caption(
+            "Comparativa entre nuestros dos canales digitales propios: **landings "
+            "de HubSpot** (`landings.barcainnovationhub.com`) vs **formulario web "
+            "del site** (`fcbarcelona.com`). Facebook Lead Ads queda fuera porque "
+            "es un canal externo pagado. El volumen no importa tanto como la "
+            "**tasa de conversión**: qué % de contactos llega a Negocio ganado."
+        )
+
+        _duelo = (_dc_duelo.groupby("canal")
+                  .agg(Contactos=("email", "count"),
+                       Activados=("lead_activado", lambda s: int((s == "Activado").sum())),
+                       Ganados=("lead_status", lambda s: int((s == "Negocio ganado").sum())))
+                  .reindex(_CANALES_DUELO).fillna(0).reset_index())
+        _duelo[["Contactos", "Activados", "Ganados"]] = \
+            _duelo[["Contactos", "Activados", "Ganados"]].astype(int)
+        _duelo["% Activación"] = (_duelo["Activados"] /
+                                  _duelo["Contactos"].replace(0, pd.NA) * 100).round(1)
+        _duelo["% Conversión a venta"] = (_duelo["Ganados"] /
+                                          _duelo["Contactos"].replace(0, pd.NA) * 100).round(2)
+
+        # KPIs comparativos: fila landing / fila web
+        _row_land = _duelo[_duelo["canal"] == "Landing"]
+        _row_web  = _duelo[_duelo["canal"] == "Formulario web Low Ticket"]
+
+        def _val(row, col, fallback=0):
+            if row.empty:
+                return fallback
+            return row.iloc[0][col]
+
+        d1, d2, d3, d4 = st.columns(4)
+        _n_land = int(_val(_row_land, "Contactos"))
+        _n_web  = int(_val(_row_web,  "Contactos"))
+        _act_land = float(_val(_row_land, "% Activación", 0) or 0)
+        _act_web  = float(_val(_row_web,  "% Activación", 0) or 0)
+        _cv_land = float(_val(_row_land, "% Conversión a venta", 0) or 0)
+        _cv_web  = float(_val(_row_web,  "% Conversión a venta", 0) or 0)
+
+        kpi_card(d1, "Contactos Landing",    f"{_n_land:,}".replace(",", "."), BARCA["garnet"])
+        kpi_card(d2, "Contactos Web",        f"{_n_web:,}".replace(",", "."),  BARCA["gold"])
+        kpi_card(d3, "% Conv. Landing",      f"{_cv_land:.2f}%",               BARCA["garnet"])
+        kpi_card(d4, "% Conv. Web",          f"{_cv_web:.2f}%",                BARCA["gold"])
+
+        # Veredicto
+        if _n_land > 0 and _n_web > 0:
+            if _cv_web > _cv_land:
+                _ratio = (_cv_web / _cv_land) if _cv_land > 0 else float("inf")
+                _txt_ganador = (f"🏆 **El formulario web convierte mejor**: "
+                                f"{_cv_web:.2f}% vs {_cv_land:.2f}% de la landing "
+                                f"({_ratio:.1f}× más eficaz).")
+            elif _cv_land > _cv_web:
+                _ratio = (_cv_land / _cv_web) if _cv_web > 0 else float("inf")
+                _txt_ganador = (f"🏆 **La landing convierte mejor**: "
+                                f"{_cv_land:.2f}% vs {_cv_web:.2f}% del formulario "
+                                f"web ({_ratio:.1f}× más eficaz).")
+            else:
+                _txt_ganador = f"🤝 Empate técnico: ambas al {_cv_web:.2f}%."
+            st.markdown(
+                f"<div style='background:{BARCA['line']};padding:12px 16px;"
+                f"border-radius:8px;margin:12px 0;font-size:14px'>{_txt_ganador}</div>",
+                unsafe_allow_html=True
+            )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Tabla + gráfico de barras agrupadas
+        dv1, dv2 = st.columns([1.2, 1.4])
+        with dv1:
+            st.markdown("**📊 Métricas comparadas**")
+            _tabla_duelo = (_duelo.rename(columns={"canal": "Canal",
+                                                    "Ganados": "Negocio ganado"})
+                            [["Canal", "Contactos", "Activados", "% Activación",
+                              "Negocio ganado", "% Conversión a venta"]])
+            st.dataframe(
+                _tabla_duelo.style
+                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+                .background_gradient(subset=["% Conversión a venta"], cmap="Purples")
+                .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                         "Negocio ganado": "{:,.0f}",
+                         "% Activación": "{:.1f}%",
+                         "% Conversión a venta": "{:.2f}%"}),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption("**% Conversión a venta** = contactos del período que hoy "
+                       "están en 'Negocio ganado'. Es conversión del contacto, no "
+                       "del carrito.")
+            st.download_button(
+                "⬇️ Descargar duelo Landing vs Web (CSV)",
+                data=_tabla_duelo.to_csv(index=False, encoding="utf-8-sig"),
+                file_name=f"landing_vs_web_{fi}_{ff}.csv",
+                mime="text/csv", key="dl_landing_vs_web",
+            )
+        with dv2:
+            _bar = _duelo.melt(id_vars="canal",
+                               value_vars=["% Activación", "% Conversión a venta"],
+                               var_name="Métrica", value_name="Porcentaje")
+            fig = px.bar(_bar, x="Métrica", y="Porcentaje", color="canal",
+                         barmode="group", text="Porcentaje",
+                         title="Rendimiento: Landing vs Formulario web",
+                         color_discrete_map=_COLOR_CANAL,
+                         category_orders={"canal": _CANALES_DUELO})
+            fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
+            fig.update_layout(yaxis_title="%", xaxis_title="",
+                              legend=dict(orientation="h", y=-0.2, title=""))
+            barca_layout(fig, 360)
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
     # Helper de tabla cruzada (canal y país contra tipo de curso)
     # ══════════════════════════════════════════════════════════════════════════
     def _cruce(dim, etiqueta, key, orden=None, top=None):
