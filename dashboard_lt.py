@@ -3677,25 +3677,97 @@ Un contacto cuenta como **Activado** si alcanza cualquiera de esas tres.
         _rd["% Conversión"] = (_rd["Ganados"] /
                                _rd["Contactos"].replace(0, pd.NA) * 100).round(2)
 
-        rd1, rd2 = st.columns([1.4, 1.2])
-        with rd1:
-            st.dataframe(
-                _rd.rename(columns={"destino": "Destino del anuncio",
-                                    "Ganados": "Negocio ganado"})
-                [["Destino del anuncio", "Contactos", "% Contactos",
-                  "Activados", "% Activación",
-                  "Negocio ganado", "% Conversión"]]
-                .style
-                .background_gradient(subset=["Contactos"], cmap="Blues")
-                .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
-                .background_gradient(subset=["% Conversión"], cmap="Purples")
-                .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
-                         "Negocio ganado": "{:,.0f}",
-                         "% Contactos": "{:.1f}%",
-                         "% Activación": "{:.1f}%",
-                         "% Conversión": "{:.2f}%"}),
-                use_container_width=True, hide_index=True,
+        # ── Inputs de presupuesto para calcular CPL ──────────────────────────
+        with st.expander("💶 Introduce el **budget** para calcular CPL",
+                         expanded=False):
+            st.caption(
+                "Escribe el gasto (€) invertido en cada destino durante este "
+                "período para calcular el **Coste por Lead (CPL)** y el "
+                "**Coste por Venta (CPA)**. Se guarda por sesión — no se "
+                "sincroniza con Meta/Google Ads."
             )
+            _bkey = f"budget_dest_{fi}_{ff}"
+            _b1, _b2, _b3, _b4 = st.columns(4)
+            with _b1:
+                _b_leadads = st.number_input(
+                    "📱 Meta Lead Ads (€)", min_value=0.0, step=100.0,
+                    value=float(st.session_state.get(f"{_bkey}_leadads", 0.0)),
+                    key=f"{_bkey}_leadads_in", format="%.2f")
+            with _b2:
+                _b_landprog = st.number_input(
+                    "🎯 Landing programa (€)", min_value=0.0, step=100.0,
+                    value=float(st.session_state.get(f"{_bkey}_landprog", 0.0)),
+                    key=f"{_bkey}_landprog_in", format="%.2f")
+            with _b3:
+                _b_landesp = st.number_input(
+                    "🗂️ Landing especialidad (€)", min_value=0.0, step=100.0,
+                    value=float(st.session_state.get(f"{_bkey}_landesp", 0.0)),
+                    key=f"{_bkey}_landesp_in", format="%.2f")
+            with _b4:
+                _b_web = st.number_input(
+                    "🌐 Web (€)", min_value=0.0, step=100.0,
+                    value=float(st.session_state.get(f"{_bkey}_web", 0.0)),
+                    key=f"{_bkey}_web_in", format="%.2f")
+
+        _budgets = {
+            "📱 Meta Lead Ads (nativo)":  _b_leadads,
+            "🎯 Landing → Programa":       _b_landprog,
+            "🗂️ Landing → Especialidad":   _b_landesp,
+            "🌐 Web (fcbarcelona.com)":    _b_web,
+        }
+        _rd["Gasto"] = _rd["destino"].map(_budgets).fillna(0.0)
+        _rd["CPL"] = _rd.apply(
+            lambda r: (r["Gasto"] / r["Contactos"]) if r["Contactos"] > 0 else 0.0,
+            axis=1
+        ).round(2)
+        _rd["CPA"] = _rd.apply(
+            lambda r: (r["Gasto"] / r["Ganados"]) if r["Ganados"] > 0 else 0.0,
+            axis=1
+        ).round(2)
+
+        rd1, rd2 = st.columns([1.6, 1.0])
+        with rd1:
+            _cols_show = ["Destino del anuncio", "Contactos", "% Contactos",
+                          "Activados", "% Activación",
+                          "Negocio ganado", "% Conversión"]
+            _tabla_dest = _rd.rename(columns={"destino": "Destino del anuncio",
+                                              "Ganados": "Negocio ganado"})
+            # Solo mostrar Gasto/CPL/CPA si hay algún budget introducido
+            _hay_budget = _rd["Gasto"].sum() > 0
+            if _hay_budget:
+                _cols_show += ["Gasto", "CPL", "CPA"]
+
+            _styler = (_tabla_dest[_cols_show].style
+                       .background_gradient(subset=["Contactos"], cmap="Blues")
+                       .background_gradient(subset=["% Activación"], cmap="Greens", vmin=0, vmax=100)
+                       .background_gradient(subset=["% Conversión"], cmap="Purples")
+                       .format({"Contactos": "{:,.0f}", "Activados": "{:,.0f}",
+                                "Negocio ganado": "{:,.0f}",
+                                "% Contactos": "{:.1f}%",
+                                "% Activación": "{:.1f}%",
+                                "% Conversión": "{:.2f}%"}))
+            if _hay_budget:
+                _styler = (_styler
+                           .background_gradient(subset=["Gasto"], cmap="Oranges")
+                           .background_gradient(subset=["CPL"], cmap="Reds")
+                           .background_gradient(subset=["CPA"], cmap="Reds")
+                           .format({"Gasto": "{:,.2f} €",
+                                    "CPL": "{:,.2f} €",
+                                    "CPA": "{:,.2f} €"}))
+            st.dataframe(_styler, use_container_width=True, hide_index=True)
+
+            if _hay_budget:
+                _total_gasto = _rd["Gasto"].sum()
+                _total_leads = _rd["Contactos"].sum()
+                _total_gan  = _rd["Ganados"].sum()
+                _cpl_g = _total_gasto / _total_leads if _total_leads > 0 else 0
+                _cpa_g = _total_gasto / _total_gan   if _total_gan  > 0 else 0
+                st.caption(
+                    f"💰 **Total invertido**: {_total_gasto:,.2f} € · "
+                    f"**CPL global**: {_cpl_g:,.2f} € · "
+                    f"**CPA global**: {_cpa_g:,.2f} €"
+                    .replace(",", "·").replace(".", ",").replace("·", ".")
+                )
             st.caption(
                 "**🗂️ Landing → Especialidad** aparece con 0 porque las 6 "
                 "landings hub (Analítica / Medicina / Entrenamiento) **NO "
