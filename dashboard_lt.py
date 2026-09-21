@@ -1113,6 +1113,8 @@ BECAS = [
     {"nombre": "Joan Gamper Trophy", "desc": 50, "desde": "2026-08-17", "hasta": "2026-08-23"},
     {"nombre": "Champions also start from scratch", "desc": 40, "desde": "2026-08-24", "hasta": "2026-08-31"},
     {"nombre": "New course, new goals", "desc": 50, "desde": "2026-09-01", "hasta": "2026-09-14"},
+    {"nombre": "We have the gold ones", "desc": 40, "desde": "2026-09-15", "hasta": "2026-09-20"},
+    {"nombre": "The Anniversary of Spotify Camp Nou", "desc": 50, "desde": "2026-09-21", "hasta": "2026-09-27"},
 ]
 
 
