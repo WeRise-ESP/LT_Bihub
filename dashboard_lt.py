@@ -1256,6 +1256,143 @@ def _fuera_del_corte(pipeline_id: str, fecha_cierre: str) -> bool:
     return fecha_cierre < FECHA_CORTE_WOO
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ATRIBUCIÓN ([RT - DA]) — calculada en HubSpot, aquí solo se lee
+# ══════════════════════════════════════════════════════════════════════════════
+# Cada pedido de WooCommerce trae, desde el 05/10/2026, el reparto multicontacto
+# de la venta: a partes iguales entre los canales con visita en los 90 días
+# antes de comprar. Los pesos de Meta, Google y otros suman 1, o 0 si no hubo
+# ninguna visita externa ("sin visita"). Antes de esa fecha están vacíos.
+# La inversión por campaña y día vive en el objeto [RT - DA] Campaña-día LT.
+FECHA_INICIO_MT = "2026-10-05"
+OBJ_CAMPANA_DIA = "2-255264476"
+
+PROPS_ATRIBUCION_DEAL = [
+    "rt__da_mt_meta", "rt__da_mt_google", "rt__da_mt_otros", "rt__da_mt_canales",
+    "rt__da_mt_campana_meta", "rt__da_mt_campana_google",
+    "rt__da_primera_fuente_compra", "rt__da_fuente_externa_compra",
+    "rt__da_campana_fuente_compra",
+]
+COLS_ATRIBUCION = ["mt_meta", "mt_google", "mt_otros", "mt_sin", "tiene_mt",
+                   "mt_canales", "camp_mt_meta", "camp_mt_google",
+                   "rst_primera", "rst_ultima", "camp_rst_ultima"]
+
+CANAL_META, CANAL_GOOGLE = "Meta Ads", "Google Ads"
+CANAL_OTROS, CANAL_SIN = "Otros canales", "Sin visita externa"
+CANALES_MT = [CANAL_META, CANAL_GOOGLE, CANAL_OTROS, CANAL_SIN]
+
+# Etiquetas de las propiedades RST (primera / última fuente de la compra)
+RST_FUENTES = {
+    "PAID_SEARCH": "Búsqueda de pago", "PAID_SOCIAL": "Redes sociales de pago",
+    "EMAIL_MARKETING": "Marketing por email", "ORGANIC_SEARCH": "Búsqueda orgánica",
+    "SOCIAL_MEDIA": "Tráfico orgánico de redes sociales",
+    "AI_REFERRALS": "Referencias de la IA", "OTHER_CAMPAIGNS": "Otras campañas",
+    "REFERRALS": "Referencias externas", "SIN_FUENTE_EXTERNA": "Sin fuente externa",
+    "SIN_DATO": "Sin dato", "REVISAR": "Revisar",
+}
+MT_COMBOS = {
+    "META": "Solo Meta Ads", "GOOGLE": "Solo Google Ads", "OTROS": "Solo otros canales",
+    "META_GOOGLE": "Meta + Google", "META_OTROS": "Meta + otros",
+    "GOOGLE_OTROS": "Google + otros", "META_GOOGLE_OTROS": "Meta + Google + otros",
+    "NINGUNO": "Sin visita externa",
+}
+# Fuentes que, en los modelos de un solo toque, cuentan como anuncio de cada red
+# (en Low Ticket la búsqueda de pago es Google Ads y las redes de pago, Meta).
+FUENTE_A_RED = {"Búsqueda de pago": CANAL_GOOGLE, "Redes sociales de pago": CANAL_META}
+
+MODELOS_ATRIB = ["Multicontacto", "Primera fuente (RST)", "Última fuente (RST)",
+                 "Fuente original del contacto"]
+
+# Algunas campañas de Meta llegan con el ID porque sus anuncios no llevan
+# utm_campaign con el nombre (las de catálogo / single image). Traducción:
+CAMPANAS_META_ID = {
+    "120242288867370135": "fcb_bihub_lowticket_CONVERSION_eu_fb/ig_25/26_es/en_CATALOGO",
+    "120243438779350135": "fcb_bihub_lowticket_CONVERSION_latam_fb/ig_25/26_es_CATALOGO",
+    "120249059052690135": "fcb_bihub_lowticket_CONVERSION_latam_fb/ig_25/26_es_CATALOGO_TEST",
+    "120242289143780135": "fcb_bihub_lowticket_CONVERSION_usa_fb/ig_25/26_en_CATALOGO",
+    "120242292027060135": "fcb_bihub_lowticket_CONVERSION_row_fb/ig_25/26_en_CATALOGO",
+    "120243438731840135": "fcb_bihub_lowticket_CONVERSION_latam_fb/ig_25/26_es_SINGLEIMAGE",
+    "120243662613990135": "fcb_bihub_lowticket_LEADADS_usa_fb/ig_25/26_en_LEADFORM",
+}
+
+
+def nombre_campana_mt(v) -> str:
+    v = (v or "").strip() if isinstance(v, str) else ""
+    return CAMPANAS_META_ID.get(v, v)
+
+
+def es_campana_ht(nombre: str) -> bool:
+    """Campaña de High Ticket por el nombre (highticket / search_highticket…)."""
+    return "highticket" in (nombre or "").lower()
+
+
+def atribucion_de_negocio(p: dict) -> dict:
+    """Pesos multicontacto y fuentes RST de un pedido, ya normalizados."""
+    def _peso(k):
+        v = p.get(k)
+        try:
+            return float(v) if v not in (None, "") else None
+        except Exception:
+            return None
+    m, g, o = _peso("rt__da_mt_meta"), _peso("rt__da_mt_google"), _peso("rt__da_mt_otros")
+    tiene = any(x is not None for x in (m, g, o))
+    m, g, o = (m or 0.0), (g or 0.0), (o or 0.0)
+    return {
+        "mt_meta": m if tiene else None,
+        "mt_google": g if tiene else None,
+        "mt_otros": o if tiene else None,
+        # Sin visita externa = lo que falta hasta 1 (los pesos suman 1 o 0)
+        "mt_sin": max(0.0, 1.0 - (m + g + o)) if tiene else None,
+        "tiene_mt": tiene,
+        "mt_canales": MT_COMBOS.get(p.get("rt__da_mt_canales") or "", "") if tiene else "",
+        "camp_mt_meta": nombre_campana_mt(p.get("rt__da_mt_campana_meta")),
+        "camp_mt_google": nombre_campana_mt(p.get("rt__da_mt_campana_google")),
+        "rst_primera": RST_FUENTES.get(p.get("rt__da_primera_fuente_compra") or "", ""),
+        "rst_ultima": RST_FUENTES.get(p.get("rt__da_fuente_externa_compra") or "", ""),
+        "camp_rst_ultima": nombre_campana_mt(p.get("rt__da_campana_fuente_compra")),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_campana_dia() -> pd.DataFrame:
+    """
+    Objeto [RT - DA] Campaña-día LT (se recarga cada día en HubSpot): una fila
+    por red, campaña y día con la inversión de plataforma y las ventas,
+    ingresos y contactos multicontacto. Aquí se usa sobre todo la INVERSIÓN,
+    para calcular CPA y ROAS; las ventas se toman de los pedidos.
+    """
+    props = ["rt__da_cd_fecha", "rt__da_cd_red", "rt__da_cd_campana",
+             "rt__da_cd_grupo", "rt__da_cd_inversion", "rt__da_cd_ventas_mt",
+             "rt__da_cd_ingresos_mt", "rt__da_cd_contactos_mt",
+             "rt__da_cd_clics", "rt__da_cd_impresiones"]
+    filas, after = [], None
+    while True:
+        payload = {"limit": 200, "properties": props}
+        if after:
+            payload["after"] = after
+        data = hs_post(f"{BASE}/crm/v3/objects/{OBJ_CAMPANA_DIA}/search", payload)
+        for r in data.get("results", []):
+            p = r["properties"]
+            filas.append({
+                "fecha": (p.get("rt__da_cd_fecha") or "")[:10],
+                "red": {"META": CANAL_META, "GOOGLE": CANAL_GOOGLE,
+                        "OTROS": CANAL_OTROS, "SIN_VISITA": CANAL_SIN}.get(
+                            p.get("rt__da_cd_red") or "", p.get("rt__da_cd_red") or ""),
+                "campana": nombre_campana_mt(p.get("rt__da_cd_campana")),
+                "grupo": p.get("rt__da_cd_grupo") or "",
+                "inversion": _num_seguro(p.get("rt__da_cd_inversion")),
+                "ventas_mt": _num_seguro(p.get("rt__da_cd_ventas_mt")),
+                "ingresos_mt": _num_seguro(p.get("rt__da_cd_ingresos_mt")),
+                "contactos_mt": _num_seguro(p.get("rt__da_cd_contactos_mt")),
+                "clics": _num_seguro(p.get("rt__da_cd_clics")),
+                "impresiones": _num_seguro(p.get("rt__da_cd_impresiones")),
+            })
+        after = data.get("paging", {}).get("next", {}).get("after")
+        if not after:
+            break
+    return pd.DataFrame(filas)
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                             fecha_fin: str = "todos") -> pd.DataFrame:
@@ -1289,7 +1426,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                                "codigo_del_producto",
                                # Descuento aplicado, para saber qué beca usó
                                # de verdad y no suponerlo por la fecha.
-                               "discount_amount"],
+                               "discount_amount"] + PROPS_ATRIBUCION_DEAL,
                 "limit": 100,
             }
             if after:
@@ -1329,6 +1466,9 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                     # para que coincida con el filtro de High Ticket de arriba.
                     "tipo_curso":   tipo_producto(_cod, p.get("dealname"),
                                                   p.get("curso")),
+                    # Atribución calculada en HubSpot ([RT - DA]): pesos
+                    # multicontacto y primera / última fuente de la compra.
+                    **atribucion_de_negocio(p),
                 }
 
             pg = data.get("paging", {})
@@ -1450,6 +1590,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 "fecha_cierre":  info["fecha_cierre"],
                 "dias_cierre":   dias,
                 "mes":           info["mes"],
+                **{k: info.get(k) for k in COLS_ATRIBUCION},
             })
 
     return pd.DataFrame(rows)
@@ -1927,6 +2068,7 @@ def fetch_ventas_detalle(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
                                                          r.get("descuento"))),
             "fecha_cierre": r.get("fecha_cierre", ""),
             "mes":          r.get("mes", ""),
+            **{k: r.get(k) for k in COLS_ATRIBUCION},
         })
     return pd.DataFrame(filas)
 
@@ -2402,6 +2544,15 @@ def main():
             paises_opts.append("Sin datos")
         filtro_pais = st.multiselect("País", options=paises_opts)
 
+        st.markdown("---")
+        modelo_atrib = st.selectbox(
+            "📣 Modelo de atribución", MODELOS_ATRIB, index=0,
+            help="Cómo se reparte el crédito de cada venta entre canales en las "
+                 "secciones de atribución (rentabilidad de anuncios, campañas, "
+                 "programas y becas). Multicontacto = a partes iguales entre los "
+                 "canales visitados en los 90 días antes de comprar. Disponible "
+                 "desde el 05/10/2026.")
+
     # Añadir columna mercado a los tres datasets (siempre fresca)
     for _frame in [df, df_mat, df_deals_periodo]:
         if not _frame.empty and "pais" in _frame.columns:
@@ -2461,31 +2612,51 @@ def main():
     # páginas de Ventas y de Contactos se pintan aquí con `secciones=`.
     # ══════════════════════════════════════════════════════════════════════════
     if pagina == "🎁 Semanal y Becas":
-        _render_becas_page(_ventas(), periodo_txt, fi, ff)
+        _dv_b = _ventas()
+        _render_becas_page(_dv_b, periodo_txt, fi, ff)
+        _separador()
+        _render_atribucion(_dv_b, fi, ff, modelo_atrib, {"becas"})
         return
 
     if pagina == "🎓 Conversión por Programa":
         _render_conversion_page(df, df_ganados_prog, fi, ff)
+        _dv_c = _ventas()
         _separador()
-        _render_ventas_page(_ventas(), periodo_txt, fi, ff,
+        _render_ventas_page(_dv_c, periodo_txt, fi, ff,
                             secciones={"ranking", "detalle"})
+        _separador()
+        _render_atribucion(_dv_c, fi, ff, modelo_atrib, {"programas"})
         _separador()
         _render_contactos_page(df, periodo_txt, fi, ff, secciones={"ranking"})
         return
 
     if pagina == "🧲 Análisis de Leads":
         _render_leads_analysis_page(df, periodo_txt, fi, ff, df_deals_periodo)
+        _dv_a = _ventas()
         _separador()
-        st.markdown("## 🧭 Canales, landings y campañas")
+        st.markdown("## 📣 Atribución de ventas a canales y campañas")
+        _t_red, _t_cam, _t_mod, _t_comb = st.tabs(
+            ["📣 Por canal y red", "🏷️ Por campaña (CPA y ROAS)",
+             "⚖️ Comparar modelos", "🔗 Combinaciones de canales"])
+        with _t_red:
+            _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"canales"})
+        with _t_cam:
+            _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"campanas"})
+        with _t_mod:
+            _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"modelos"})
+        with _t_comb:
+            _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"combinaciones"})
+        _separador()
+        st.markdown("## 🧭 Canales de entrada, landings y captación por campaña")
         _t_canal, _t_land, _t_camp = st.tabs(
             ["🧭 Canal de entrada", "🎯 Landings y destino del anuncio",
-             "🏷️ Conversión por campaña"])
+             "🏷️ Leads y compras por campaña de origen"])
         with _t_canal:
             _render_contactos_page(df, periodo_txt, fi, ff, secciones={"canal"})
         with _t_land:
             _render_contactos_page(df, periodo_txt, fi, ff, secciones={"landings"})
         with _t_camp:
-            _render_ventas_page(_ventas(), periodo_txt, fi, ff, df,
+            _render_ventas_page(_dv_a, periodo_txt, fi, ff, df,
                                 secciones={"campana"})
         return
 
@@ -2529,6 +2700,9 @@ def main():
         st.markdown("### 💶 Facturación")
         _render_ventas_page(_dv_general, periodo_txt, fi, ff,
                             secciones={"kpis", "tipo"})
+        _separador()
+        st.markdown("### 📣 Rentabilidad de anuncios")
+        _render_atribucion(_dv_general, fi, ff, modelo_atrib, {"rentabilidad"})
         _separador()
 
     # ── Distribución general ───────────────────────────────────────────────────
@@ -3163,6 +3337,415 @@ def main():
         f"{ACCOUNT_NAME} · Contactos Low Ticket por programa (pgm) · Datos actualizados automáticamente cada 5 min</div>",
         unsafe_allow_html=True
     )
+
+
+def _credito(dv: pd.DataFrame, modelo: str) -> pd.DataFrame:
+    """
+    Crédito de cada venta por canal según el modelo de atribución.
+    Multicontacto: una fila por canal con su peso (suman 1 por venta).
+    Modelos de un toque: una fila por venta con peso 1.
+    """
+    def _s(v):
+        return v if isinstance(v, str) else ""
+    filas = []
+    for r in dv.itertuples(index=False):
+        imp = float(r.importe or 0)
+        if modelo == "Multicontacto":
+            if not pd.notna(getattr(r, "mt_meta", None)):
+                continue   # pedido sin reparto calculado (anterior al 05/10)
+            for canal, peso, camp in ((CANAL_META, r.mt_meta, _s(r.camp_mt_meta)),
+                                      (CANAL_GOOGLE, r.mt_google, _s(r.camp_mt_google)),
+                                      (CANAL_OTROS, r.mt_otros, ""),
+                                      (CANAL_SIN, r.mt_sin, "")):
+                if pd.notna(peso) and peso > 0:
+                    filas.append((r.deal_id, canal, float(peso), float(peso) * imp, camp))
+        else:
+            if modelo.startswith("Primera"):
+                canal, camp = _s(r.rst_primera) or "Sin dato", ""
+            elif modelo.startswith("Última"):
+                canal, camp = _s(r.rst_ultima) or "Sin dato", _s(r.camp_rst_ultima)
+            else:
+                canal, camp = _s(r.fuente) or "Sin datos", _s(r.camp_original)
+            filas.append((r.deal_id, canal, 1.0, imp, camp))
+    cr = pd.DataFrame(filas, columns=["deal_id", "canal", "peso", "ingresos", "campana"])
+    if cr.empty:
+        cr["red"] = []
+        cr["via_ht"] = []
+        return cr
+    cr["red"] = cr["canal"].map(
+        lambda c: c if c in (CANAL_META, CANAL_GOOGLE) else FUENTE_A_RED.get(c))
+    cr["via_ht"] = cr["campana"].apply(es_campana_ht) & cr["red"].notna()
+    return cr
+
+
+def _bloque(canal: str) -> str:
+    """Agrupa los canales de cualquier modelo en 4 bloques comparables."""
+    if canal in (CANAL_META, CANAL_GOOGLE):
+        return canal
+    if canal in FUENTE_A_RED:
+        return FUENTE_A_RED[canal]
+    if canal in (CANAL_SIN, "Sin fuente externa"):
+        return CANAL_SIN
+    return CANAL_OTROS
+
+
+def _render_atribucion(dv, fi, ff, modelo, secciones):
+    """
+    Secciones de atribución (multicontacto y modelos de un toque) que se pintan
+    dentro de las páginas. Todas trabajan solo desde el 05/10/2026, que es
+    cuando empieza el cálculo en HubSpot, y la inversión se toma del MISMO
+    rango que las ventas (si no, el CPA sale inflado).
+    """
+    _on = lambda k: k in secciones
+    _COLOR = {CANAL_META: BARCA["blue"], CANAL_GOOGLE: BARCA["gold"],
+              CANAL_OTROS: BARCA["garnet"], CANAL_SIN: BARCA["ink40"]}
+
+    def _eur(x):
+        return f"{x:,.0f} €".replace(",", ".")
+
+    if dv is None or dv.empty or "mt_meta" not in dv.columns:
+        st.info("No hay ventas en el período y filtros seleccionados.")
+        return
+
+    ini = FECHA_INICIO_MT if fi == "todos" else max(FECHA_INICIO_MT, str(fi))
+    fin = str(date.today()) if ff == "todos" else str(ff)
+    if ini > fin:
+        st.info("📣 La atribución empieza el **05/10/2026**. Elige un período "
+                "posterior para ver esta sección.")
+        return
+    dvw = dv[(dv["fecha_cierre"] >= ini) & (dv["fecha_cierre"] <= fin)].copy()
+    _txt_rango = (f"{date.fromisoformat(ini).strftime('%d/%m/%Y')} → "
+                  f"{date.fromisoformat(fin).strftime('%d/%m/%Y')}")
+    _aviso = (fi == "todos" or str(fi) < FECHA_INICIO_MT)
+    st.caption(
+        f"📣 **Modelo: {modelo}** · ventas cerradas del **{_txt_rango}**"
+        + (" (la atribución empieza el 05/10/2026, lo anterior no se cuenta aquí)"
+           if _aviso else "")
+        + ". La inversión es la de las campañas Low Ticket de Meta y Google en "
+          "esas mismas fechas y **no** se filtra por país ni por fuente."
+    )
+    if dvw.empty:
+        st.info("No hay ventas en ese rango.")
+        return
+
+    cr = _credito(dvw, modelo)
+    n_ventas = len(dvw)
+    fact = float(dvw["importe"].sum())
+    n_mt = int(dvw["mt_meta"].notna().sum())
+
+    try:
+        dcd = fetch_campana_dia()
+    except Exception:
+        dcd = pd.DataFrame()
+    if not dcd.empty:
+        inv = dcd[(dcd["fecha"] >= ini) & (dcd["fecha"] <= fin)
+                  & dcd["red"].isin([CANAL_META, CANAL_GOOGLE])
+                  & (dcd["grupo"] == "LT")]
+    else:
+        inv = pd.DataFrame(columns=["red", "campana", "inversion", "fecha"])
+    inv_red = inv.groupby("red")["inversion"].sum() if not inv.empty else pd.Series(dtype=float)
+
+    ads = cr[cr["red"].notna()] if not cr.empty else cr
+    if modelo == "Multicontacto" and n_mt < n_ventas:
+        st.caption(f"ℹ️ {n_ventas - n_mt} de {n_ventas} ventas aún no tienen el "
+                   f"reparto calculado (HubSpot lo recalcula una vez al día) y no "
+                   f"se cuentan en este modelo.")
+
+    # ══ Rentabilidad (General) ═══════════════════════════════════════════════
+    if _on("rentabilidad"):
+        v_ads = float(ads["peso"].sum()) if not ads.empty else 0.0
+        i_ads = float(ads["ingresos"].sum()) if not ads.empty else 0.0
+        inv_t = float(inv["inversion"].sum()) if not inv.empty else 0.0
+        k1, k2, k3, k4, k5 = st.columns(5)
+        kpi_card(k1, "Inversión anuncios LT", _eur(inv_t), BARCA["blue"])
+        kpi_card(k2, "Ventas por anuncios", f"{v_ads:,.1f}".replace(",", "X")
+                 .replace(".", ",").replace("X", "."), BARCA["gold"])
+        kpi_card(k3, "Ingresos por anuncios", _eur(i_ads), BARCA["garnet"])
+        kpi_card(k4, "CPA anuncios", _eur(inv_t / v_ads) if v_ads else "–", BARCA["blue_deep"])
+        kpi_card(k5, "ROAS", f"{i_ads / inv_t:.2f}".replace(".", ",") if inv_t else "–",
+                 BARCA["garnet_deep"])
+        st.caption(
+            f"Ventas e ingresos **atribuidos a Meta y Google** según el modelo "
+            f"(en multicontacto, cada venta reparte su crédito entre los canales "
+            f"visitados en los 90 días previos). Son el "
+            f"**{(i_ads / fact * 100 if fact else 0):.1f} %** de la facturación "
+            f"del rango ({_eur(fact)}, {n_ventas} ventas).")
+
+        c1, c2 = st.columns([1, 1.4])
+        with c1:
+            rep = (cr.assign(bloque=cr["canal"].map(_bloque))
+                   .groupby("bloque")["peso"].sum().reindex(CANALES_MT).fillna(0)
+                   .reset_index().rename(columns={"bloque": "Canal", "peso": "Ventas"}))
+            fig = px.pie(rep, names="Canal", values="Ventas", hole=0.55,
+                         title="Reparto de las ventas por canal",
+                         color="Canal", color_discrete_map=_COLOR,
+                         category_orders={"Canal": CANALES_MT})
+            fig.update_traces(textposition="outside", textinfo="percent+label",
+                              marker=dict(line=dict(color=BARCA["white"], width=2)))
+            barca_layout(fig, 340)
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            # % de la facturación que viene de anuncios, semana a semana, en
+            # multicontacto y en último toque: la diferencia es el crédito que
+            # el último toque le quita (o le da) a los anuncios.
+            d = dvw.copy()
+            d["_sem"] = pd.to_datetime(d["fecha_cierre"]).dt.to_period("W-SUN").dt.start_time
+            fact_sem = d.groupby("_sem")["importe"].sum()
+            series = []
+            for mod in ("Multicontacto", "Última fuente (RST)"):
+                c = _credito(d, mod)
+                c = c[c["red"].notna()].merge(d[["deal_id", "_sem"]], on="deal_id")
+                s = (c.groupby("_sem")["ingresos"].sum() / fact_sem * 100).fillna(0)
+                series.append(s.rename(mod).reset_index().rename(columns={0: mod}))
+            if series:
+                ev = series[0].merge(series[1], on="_sem", how="outer").fillna(0)
+                ev = ev.melt(id_vars="_sem", var_name="Modelo", value_name="% facturación")
+                ev["Semana"] = ev["_sem"].dt.strftime("%d/%m")
+                fig = px.line(ev.sort_values("_sem"), x="Semana", y="% facturación",
+                              color="Modelo", markers=True,
+                              title="% de la facturación atribuida a anuncios, por semana",
+                              color_discrete_sequence=[BARCA["blue"], BARCA["gold"]])
+                fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""),
+                                  xaxis_title="", yaxis_ticksuffix=" %")
+                barca_layout(fig, 340)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # ══ Por canal / red (Análisis) ═══════════════════════════════════════════
+    if _on("canales"):
+        st.markdown("### 📣 Ventas por canal según el modelo")
+        tc = (cr.groupby("canal").agg(Ventas=("peso", "sum"), Ingresos=("ingresos", "sum"))
+              .sort_values("Ventas", ascending=False).reset_index())
+        tc["% ventas"] = (tc["Ventas"] / n_ventas * 100).round(1) if n_ventas else 0
+        tc["% facturación"] = (tc["Ingresos"] / fact * 100).round(1) if fact else 0
+        st.dataframe(
+            tc.rename(columns={"canal": "Canal"}).style
+              .background_gradient(subset=["Ventas"], cmap="Blues")
+              .format({"Ventas": "{:,.1f}", "Ingresos": "{:,.0f} €",
+                       "% ventas": "{:.1f}%", "% facturación": "{:.1f}%"}),
+            use_container_width=True, hide_index=True)
+        if modelo == "Multicontacto":
+            st.caption("En multicontacto **«Otros canales»** junta todo lo que no es "
+                       "Meta ni Google (orgánico, email, IA, otras campañas…). Para "
+                       "desglosarlo, cambia el modelo a primera o última fuente.")
+
+        st.markdown("#### Rentabilidad por red")
+        filas = []
+        for red in (CANAL_META, CANAL_GOOGLE):
+            a = ads[ads["red"] == red] if not ads.empty else ads
+            v = float(a["peso"].sum()) if not a.empty else 0.0
+            i = float(a["ingresos"].sum()) if not a.empty else 0.0
+            v_ht = float(a[a["via_ht"]]["peso"].sum()) if not a.empty else 0.0
+            i_ht = float(a[a["via_ht"]]["ingresos"].sum()) if not a.empty else 0.0
+            iv = float(inv_red.get(red, 0.0))
+            filas.append({
+                "Red": red, "Inversión LT": iv, "Ventas": v, "Ingresos": i,
+                "CPA": iv / v if v else None, "ROAS": i / iv if iv else None,
+                "De ellas vía anuncios HT": v_ht,
+                "CPA solo campañas LT": iv / (v - v_ht) if (v - v_ht) else None,
+                "ROAS solo campañas LT": (i - i_ht) / iv if iv else None,
+            })
+        tr = pd.DataFrame(filas)
+        st.dataframe(
+            tr.style.format({"Inversión LT": "{:,.0f} €", "Ventas": "{:,.1f}",
+                             "Ingresos": "{:,.0f} €", "CPA": "{:,.0f} €",
+                             "ROAS": "{:.2f}", "De ellas vía anuncios HT": "{:,.1f}",
+                             "CPA solo campañas LT": "{:,.0f} €",
+                             "ROAS solo campañas LT": "{:.2f}"}, na_rep="–"),
+            use_container_width=True, hide_index=True)
+        st.caption(
+            "**Vía anuncios HT** = ventas de Low Ticket cuyo crédito va a una campaña "
+            "de **High Ticket** (el comprador hizo clic en un anuncio de máster o "
+            "postgrado y acabó comprando un curso). La inversión solo incluye "
+            "campañas Low Ticket, así que el **CPA solo campañas LT** es el que mide "
+            "de verdad lo que rinden esas campañas."
+            + ("" if modelo == "Multicontacto" else
+               "  \nEn los modelos de un toque, «Búsqueda de pago» cuenta como Google "
+               "Ads y «Redes sociales de pago» como Meta Ads."))
+
+    # ══ Por campaña (Análisis) ═══════════════════════════════════════════════
+    if _on("campanas"):
+        st.markdown("### 🏷️ Ventas, CPA y ROAS por campaña")
+        if modelo == "Primera fuente (RST)":
+            st.info("La primera fuente RST no guarda la campaña. Cambia a "
+                    "**Multicontacto** o **Última fuente** para verlo por campaña.")
+        else:
+            a = ads.copy()
+            a["campana"] = a["campana"].replace("", "(sin campaña identificada)")
+            a["_k"] = a["campana"].str.lower()
+            va = (a.groupby(["red", "_k"])
+                  .agg(Campaña=("campana", "first"), Ventas=("peso", "sum"),
+                       Ingresos=("ingresos", "sum"), HT=("via_ht", "max"))
+                  .reset_index())
+            if not inv.empty:
+                iv = (inv.assign(_k=inv["campana"].str.lower())
+                      .groupby(["red", "_k"])
+                      .agg(Inversion=("inversion", "sum"), _c=("campana", "first"))
+                      .reset_index())
+                t = va.merge(iv, on=["red", "_k"], how="outer")
+                t["Campaña"] = t["Campaña"].fillna(t["_c"])
+            else:
+                t = va.assign(Inversion=0.0)
+            t = t.fillna({"Ventas": 0.0, "Ingresos": 0.0, "Inversion": 0.0, "HT": False})
+            t = t[(t["Ventas"] > 0) | (t["Inversion"] > 0)]
+            t["Grupo"] = t["HT"].map({True: "High Ticket", False: "Low Ticket"})
+            t["CPA"] = (t["Inversion"] / t["Ventas"]).where(t["Ventas"] > 0)
+            t["ROAS"] = (t["Ingresos"] / t["Inversion"]).where(t["Inversion"] > 0)
+            t = t.sort_values(["Inversion", "Ventas"], ascending=False)
+            st.dataframe(
+                t[["Campaña", "red", "Grupo", "Inversion", "Ventas", "Ingresos", "CPA", "ROAS"]]
+                .rename(columns={"red": "Red", "Inversion": "Inversión"}).style
+                .background_gradient(subset=["Ventas"], cmap="Blues")
+                .background_gradient(subset=["Inversión"], cmap="YlOrBr")
+                .format({"Inversión": "{:,.0f} €", "Ventas": "{:,.1f}",
+                         "Ingresos": "{:,.0f} €", "CPA": "{:,.0f} €",
+                         "ROAS": "{:.2f}"}, na_rep="–"),
+                use_container_width=True, hide_index=True,
+                height=min(620, len(t) * 36 + 40),
+                column_config={"Campaña": st.column_config.TextColumn(width="large")})
+            st.caption("Campañas de Meta y Google con inversión o ventas en el rango. "
+                       "Las de **High Ticket** no tienen inversión aquí (no son de Low "
+                       "Ticket), pero aparecen porque traen compradores de cursos."
+                       + (" Una venta puede repartirse entre una campaña de Meta y otra "
+                          "de Google." if modelo == "Multicontacto" else ""))
+            st.download_button(
+                "⬇️ Descargar campañas (CSV)",
+                data=t.drop(columns=["_k", "_c", "HT"], errors="ignore")
+                      .to_csv(index=False, encoding="utf-8-sig"),
+                file_name=f"atribucion_campanas_{ini}_{fin}.csv",
+                mime="text/csv", key="dl_atrib_campanas")
+
+    # ══ Comparar modelos (Análisis) ══════════════════════════════════════════
+    if _on("modelos"):
+        st.markdown("### ⚖️ Mismo período, distinto modelo")
+        st.caption("Cuánto crédito se lleva cada canal según el modelo. Para poder "
+                   "comparar, los canales se agrupan en 4 bloques (en los modelos de "
+                   "un toque, la búsqueda de pago cuenta como Google y las redes de "
+                   "pago como Meta). La diferencia entre primera y última fuente dice "
+                   "qué canal **abre** la venta y cuál la **cierra**.")
+        comp = {}
+        for mod in MODELOS_ATRIB:
+            c = _credito(dvw, mod)
+            if c.empty:
+                continue
+            comp[mod] = c.assign(b=c["canal"].map(_bloque)).groupby("b")["peso"].sum()
+        tm = pd.DataFrame(comp).reindex(CANALES_MT).fillna(0)
+        tm.index.name = "Canal"
+        tm_pct = (tm / tm.sum() * 100).round(1)
+        g1, g2 = st.columns([1.2, 1])
+        with g1:
+            largo = tm_pct.reset_index().melt(
+                id_vars="Canal", var_name="Modelo", value_name="% ventas")
+            fig = px.bar(largo, x="Modelo", y="% ventas", color="Canal", barmode="stack",
+                         color_discrete_map=_COLOR, category_orders={"Canal": CANALES_MT},
+                         title="Reparto de las ventas por modelo")
+            fig.update_layout(legend=dict(orientation="h", y=-0.3, title=""),
+                              xaxis_title="", yaxis_ticksuffix=" %")
+            barca_layout(fig, 380)
+            st.plotly_chart(fig, use_container_width=True)
+        with g2:
+            st.dataframe(tm.rename_axis("Canal").style.format("{:,.1f}"),
+                         use_container_width=True)
+            st.caption("Ventas (en multicontacto pueden ser fracciones).")
+
+    # ══ Combinaciones de canales (Análisis) ══════════════════════════════════
+    if _on("combinaciones"):
+        st.markdown("### 🔗 Por qué canales pasa cada comprador")
+        cm = dvw[dvw["mt_meta"].notna() & (dvw["mt_canales"] != "")]
+        if cm.empty:
+            st.info("Ninguna venta del rango tiene el reparto calculado.")
+        else:
+            tcm = (cm.groupby("mt_canales")
+                   .agg(Ventas=("deal_id", "count"), Facturación=("importe", "sum"))
+                   .sort_values("Ventas", ascending=False).reset_index()
+                   .rename(columns={"mt_canales": "Canales visitados (90 días)"}))
+            tcm["% ventas"] = (tcm["Ventas"] / tcm["Ventas"].sum() * 100).round(1)
+            c1, c2 = st.columns([1.3, 1])
+            with c1:
+                fig = px.bar(tcm.sort_values("Ventas"), x="Ventas",
+                             y="Canales visitados (90 días)", orientation="h",
+                             text="Ventas", title="Ventas según los canales visitados",
+                             color_discrete_sequence=[BARCA["blue"]])
+                fig.update_layout(yaxis_title="")
+                barca_layout(fig, max(300, len(tcm) * 40 + 120))
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                st.dataframe(tcm.style.format({"Facturación": "{:,.0f} €",
+                                               "% ventas": "{:.1f}%"}),
+                             use_container_width=True, hide_index=True)
+            st.caption("Es el camino real del comprador, sin repartir: cuántas ventas "
+                       "pasaron solo por un canal y cuántas por varios.")
+
+    # ══ Por programa (Conversión) ════════════════════════════════════════════
+    if _on("programas"):
+        st.markdown("### 📣 Ventas influidas por anuncios, por programa")
+        st.caption("Qué parte de las ventas de cada programa se atribuye a Meta y "
+                   "Google según el modelo. Los programas con un % bajo se venden "
+                   "solos (orgánico, email, sin visita externa).")
+        p = dvw.copy()
+        p["_clave"] = p.apply(lambda r: r["cod_base"] or r["producto"], axis=1)
+        base = (p.groupby("_clave")
+                .agg(Programa=("producto", "first"), Tipo=("tipo_curso", "first"),
+                     Ventas=("deal_id", "count"), Facturación=("importe", "sum"))
+                .reset_index())
+        a = ads.merge(p[["deal_id", "_clave"]], on="deal_id") if not ads.empty else ads
+        if not a.empty:
+            aa = a.groupby("_clave").agg(Anuncios=("peso", "sum"),
+                                         Ingresos_anuncios=("ingresos", "sum")).reset_index()
+            base = base.merge(aa, on="_clave", how="left")
+        else:
+            base["Anuncios"] = 0.0
+            base["Ingresos_anuncios"] = 0.0
+        base = base.fillna({"Anuncios": 0.0, "Ingresos_anuncios": 0.0})
+        base["% por anuncios"] = (base["Anuncios"] / base["Ventas"] * 100).round(1)
+        base = base.sort_values("Ventas", ascending=False)
+        _n = st.slider("Nº de programas", 5, 40, 15, key="atrib_top_prog")
+        st.dataframe(
+            base.head(_n).rename(columns={"_clave": "Código",
+                                          "Anuncios": "Ventas por anuncios",
+                                          "Ingresos_anuncios": "Ingresos por anuncios"})
+            .style.background_gradient(subset=["% por anuncios"], cmap="Purples",
+                                       vmin=0, vmax=100)
+            .format({"Facturación": "{:,.0f} €", "Ventas por anuncios": "{:,.1f}",
+                     "Ingresos por anuncios": "{:,.0f} €", "% por anuncios": "{:.1f}%"}),
+            use_container_width=True, hide_index=True,
+            column_config={"Programa": st.column_config.TextColumn(width="large")})
+
+    # ══ Por beca (Becas) ═════════════════════════════════════════════════════
+    if _on("becas"):
+        st.markdown("### 📣 Canal de las ventas de cada beca")
+        st.caption("Reparto de las ventas de cada beca por canal según el modelo, y "
+                   "**CPA de anuncios** = inversión de las campañas LT durante los "
+                   "días de la beca / ventas atribuidas a anuncios.")
+        b = dvw.copy()
+        crb = cr.merge(b[["deal_id", "beca"]], on="deal_id")
+        if crb.empty:
+            st.info("No hay ventas con atribución en el rango.")
+        else:
+            crb["b"] = crb["canal"].map(_bloque)
+            piv = crb.pivot_table(index="beca", columns="b", values="peso",
+                                  aggfunc="sum", fill_value=0.0)
+            piv = piv.reindex(columns=[c for c in CANALES_MT if c in piv.columns])
+            tot = b.groupby("beca").agg(Ventas=("deal_id", "count"),
+                                        Facturación=("importe", "sum"))
+            pct = (piv.div(piv.sum(axis=1), axis=0) * 100).round(1)
+            pct.columns = [f"% {c}" for c in pct.columns]
+            tb = tot.join(pct)
+            _anu = crb[crb["red"].notna()].groupby("beca")["peso"].sum()
+            fechas = {etiqueta_beca(x): (x["desde"], x["hasta"]) for x in BECAS}
+            cpas = {}
+            for beca, v in _anu.items():
+                if beca not in fechas or not v or inv.empty:
+                    continue
+                d0, d1 = max(fechas[beca][0], ini), min(fechas[beca][1], fin)
+                iv = float(inv[(inv["fecha"] >= d0) & (inv["fecha"] <= d1)]["inversion"].sum())
+                cpas[beca] = iv / v if iv else None
+            tb["CPA anuncios"] = pd.Series(cpas)
+            tb = tb.sort_values("Ventas", ascending=False).reset_index().rename(
+                columns={"beca": "Beca"})
+            fmt = {c: "{:.1f}%" for c in tb.columns if c.startswith("% ")}
+            fmt.update({"Facturación": "{:,.0f} €", "CPA anuncios": "{:,.0f} €"})
+            st.dataframe(tb.style.format(fmt, na_rep="–"),
+                         use_container_width=True, hide_index=True)
 
 
 def _render_becas_page(dv, periodo_txt, fi, ff):

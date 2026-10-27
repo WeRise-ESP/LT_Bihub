@@ -64,6 +64,36 @@ laterales), pero el código sigue ahí por si se quieren recuperar.
 La página de becas compara el €/día de cada beca con los **días del período
 sin ninguna beca** de `BECAS` (referencia "sin beca").
 
+## 📣 Atribución (multicontacto y modelos de un toque)
+**No se calcula aquí: se LEE de HubSpot.** Un proceso externo ([RT - DA]) rellena
+cada pedido de WooCommerce desde el **05/10/2026** (`FECHA_INICIO_MT`):
+
+- `rt__da_mt_meta` / `_google` / `_otros`: pesos multicontacto (reparto a partes
+  iguales entre los canales visitados en los 90 días antes de comprar). Suman 1,
+  o 0 si no hubo visita externa → "Sin visita externa" = 1 − suma. Vacíos antes
+  del 05/10 (y el día de la compra, hasta que se recalcula por la noche).
+- `rt__da_mt_campana_meta` / `_google`: campaña que recibe el crédito.
+- `rt__da_mt_canales`: combinación de canales del pedido.
+- `rt__da_primera_fuente_compra` / `rt__da_fuente_externa_compra` (+
+  `rt__da_campana_fuente_compra`): primera y última fuente "RST", un solo toque.
+
+La **inversión** sale del objeto **[RT - DA] Campaña-día LT** (`2-255264476`,
+`fetch_campana_dia()`), filtrando `grupo == "LT"`. Se toma SIEMPRE del mismo
+rango de fechas que las ventas: si el período empieza antes del 05/10 se recorta
+al 05/10 y se avisa. (El panel de HubSpot «[RST] Panel de anuncios» no lo hace
+en sus informes de plataforma y el CPA multitouch sale inflado.)
+
+`_credito()` convierte cada venta en filas de crédito según el modelo del
+selector lateral; `_render_atribucion(..., secciones=...)` pinta: General
+`{"rentabilidad"}`, Análisis `{"canales","campanas","modelos","combinaciones"}`,
+Conversión `{"programas"}` y Becas `{"becas"}`.
+
+⚠️ Parte de las ventas atribuidas a Meta/Google vienen de **campañas de High
+Ticket** (en oct-2026, ~1/3 de las de Google): se marcan como "vía anuncios HT" y
+hay un CPA "solo campañas LT". ⚠️ Algunas campañas de Meta llegan con el **ID**
+en lugar del nombre (anuncios sin `utm_campaign`): se traducen con
+`CAMPANAS_META_ID`; añade ahí las nuevas.
+
 ## ⚠️ "Activado" NO sale de `lt_lead_status`
 Es el error intuitivo y ya se cometió una vez. `clasif_activado()` mira señales
 reales de interés del lead:
