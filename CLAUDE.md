@@ -40,6 +40,10 @@ pídelo por el gestor de contraseñas del equipo).
   Del 05 al 26/10/2026: dashboard 3.275 vs panel 2.938. La diferencia (~330)
   son leads LT sin ninguna visita externa (tráfico directo): el panel solo pone
   en "sin visita" a compradores, así que esos leads no aparecen en él.
+  La tabla «Contactos nuevos por canal» (`_render_contactos_por_red`, pestaña
+  Por canal y red de Análisis) lo cuadra: filas del panel + leads sin visita
+  externa (`visita_externa`, de `rt__da_primera/ultima_fuente_externa`) +
+  «diferencia sin explicar» (~125 en ese rango) = total del dashboard.
   Los prefijos de High Ticket (`EP_`, `PG_`, `M_`) NO entran aquí como leads,
   pero sí aparecen en algunos pedidos de WooCommerce (ver más abajo).
 - **Qué es cada prefijo** (verificado contra los nombres reales de los productos

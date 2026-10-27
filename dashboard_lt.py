@@ -308,6 +308,7 @@ LEAD_COLS = [
     "orig_d1", "orig_d2", "rec_d1", "rec_d2",
     "fecha_fuente_reciente",
     "record_source", "record_d1", "record_d2", "record_d3", "canal",
+    "visita_externa",
 ]
 
 # Etiquetas EXACTAS de HubSpot (en español) para la Fuente original de tráfico
@@ -399,6 +400,8 @@ CONTACT_PROPS = [
     "hs_object_source_detail_1", "hs_object_source_detail_2", "hs_object_source_detail_3",
     "mail_programa_interes",
     "pgm", "createdate",
+    # Visita externa (anuncios, buscadores, email, IA…) según el proceso [RT - DA]
+    "rt__da_primera_fuente_externa", "rt__da_ultima_fuente_externa",
 ]
 
 # ── Clasificación de mercado ───────────────────────────────────────────────────
@@ -1131,6 +1134,8 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "canal":            _canal,
             "record_d2":        (cp.get("hs_object_source_detail_2") or "").strip(),
             "record_d3":        (cp.get("hs_object_source_detail_3") or "").strip(),
+            "visita_externa":   bool(cp.get("rt__da_primera_fuente_externa")
+                                     or cp.get("rt__da_ultima_fuente_externa")),
         })
     return pd.DataFrame(rows)
 
@@ -2790,6 +2795,7 @@ def main():
              "⚖️ Comparar modelos", "🔗 Combinaciones de canales"])
         with _t_red:
             _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"canales"})
+            _render_contactos_por_red(df, fi, ff)
         with _t_cam:
             _render_atribucion(_dv_a, fi, ff, modelo_atrib, {"campanas"})
         with _t_mod:
@@ -3537,6 +3543,80 @@ def _bloque(canal: str) -> str:
     if canal in (CANAL_SIN, "Sin fuente externa"):
         return CANAL_SIN
     return CANAL_OTROS
+
+
+def _render_contactos_por_red(dc, fi, ff):
+    """
+    Contactos nuevos por red (multicontacto del panel de HubSpot) cuadrados con
+    el total del dashboard. El panel solo reparte los contactos que tuvieron una
+    visita externa en los 90 días previos; los leads sin ninguna (tráfico
+    directo) no los cuenta, así que aquí van en su propia fila.
+    """
+    ini = FECHA_INICIO_MT if fi == "todos" else max(FECHA_INICIO_MT, str(fi))
+    fin = str(date.today()) if ff == "todos" else str(ff)
+    if ini > fin or dc is None or dc.empty:
+        return
+    try:
+        dcd = fetch_campana_dia()
+    except Exception:
+        return
+    if dcd.empty:
+        return
+
+    def _eur(x):
+        return f"{x:,.0f} €".replace(",", ".")
+
+    st.markdown("### 👥 Contactos nuevos por canal (multicontacto)")
+    cw = dcd[(dcd["fecha"] >= ini) & (dcd["fecha"] <= fin)]
+    dcw = dc[(dc["fecha"] >= ini) & (dc["fecha"] <= fin)]
+    total = len(dcw)
+    sin_visita = int((~dcw["visita_externa"].astype(bool)
+                      & (dcw["canal"] != "Checkout / tienda")).sum())
+
+    filas = []
+    for red in (CANAL_META, CANAL_GOOGLE, CANAL_OTROS):
+        r = cw[cw["red"] == red]
+        n = float(r["contactos_mt"].sum())
+        n_lt = float(r[r["grupo"] == "LT"]["contactos_mt"].sum())
+        iv = float(r[r["grupo"] == "LT"]["inversion"].sum())
+        filas.append({"Canal": red, "Contactos": n, "Inversión LT": iv if iv else None,
+                      "CPL campañas LT": iv / n_lt if (iv and n_lt) else None})
+    compradores_sin = float(cw[cw["red"] == CANAL_SIN]["contactos_mt"].sum())
+    filas.append({"Canal": "Sin visita externa · compradores", "Contactos": compradores_sin})
+    filas.append({"Canal": "Sin visita externa · leads (el panel no los cuenta)",
+                  "Contactos": float(sin_visita)})
+    resto = total - sum(f["Contactos"] for f in filas)
+    filas.append({"Canal": "Diferencia sin explicar con el panel", "Contactos": resto})
+    t = pd.DataFrame(filas)
+    t["% del total"] = t["Contactos"] / total * 100 if total else 0
+    t = pd.concat([t, pd.DataFrame([{"Canal": "TOTAL dashboard", "Contactos": float(total),
+                                     "% del total": 100.0}])], ignore_index=True)
+
+    def _gris(row):
+        c = row["Canal"]
+        if c.startswith("TOTAL"):
+            return ["font-weight:bold"] * len(row)
+        if c.startswith("Sin visita externa · leads") or c.startswith("Diferencia"):
+            return [f"color:{BARCA['ink60']};font-style:italic"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(
+        t.style.apply(_gris, axis=1)
+         .format({"Contactos": "{:,.1f}", "Inversión LT": "{:,.0f} €",
+                  "CPL campañas LT": "{:,.0f} €", "% del total": "{:.1f}%"}, na_rep="–"),
+        use_container_width=True, hide_index=True)
+    panel = total - sin_visita - resto
+    _n = lambda x: f"{x:,.0f}".replace(",", ".")
+    st.caption(
+        f"Del {date.fromisoformat(ini).strftime('%d/%m/%Y')} al "
+        f"{date.fromisoformat(fin).strftime('%d/%m/%Y')}. **Meta, Google, otros "
+        f"canales y compradores sin visita** son las cifras del panel de HubSpot "
+        f"(cada contacto se reparte entre los canales externos que visitó en los "
+        f"90 días antes de registrarse): **{_n(panel)}** en total. El dashboard "
+        f"cuenta además **{_n(sin_visita)}** leads sin ninguna visita externa (tráfico "
+        f"directo), que el panel no reparte. La **diferencia sin explicar** viene de "
+        f"cómo decide el proceso [RT - DA] qué es un lead Low Ticket. Las filas del "
+        f"panel no se filtran por país ni fuente; el total sí.")
 
 
 def _render_atribucion(dv, fi, ff, modelo, secciones):
