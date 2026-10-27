@@ -353,14 +353,29 @@ a 145 valores distintos. Si aparece una variante nueva, añádela a
 ⚠️ Los `informe_lt*.py` tienen su **propia** `resolve_pais` y NO normalizan
 todavía: si sacas un Excel, España y Spain saldrán separados.
 
-## Qué hay dentro de "Otros"
-~9 % de la facturación. Son productos reales de Low Ticket que no siguen la
-nomenclatura `pgm`: Barça Coach Academy, Football Scouting, Coaches Academy,
-Digital Capacity Management, Business Intelligence in Sports, Introduction to
-Sports Analytics… Ahí dentro hay además **63 ventas / 21.657 € (ene–jul 2026)
-que no son cursos**, sino extras de alumni (`PREMIUM EXPERIENCE`,
-`FAMILY ACCESS`, `OFFICIAL GRADUATION CEREMONY`). Hoy **sí cuentan**; si se
-decide que no, hay que filtrarlos por nombre en `fetch_negocios_cerrados`.
+## Solo matrículas únicas (y qué queda en "Otros")
+Desde oct-2026 el dashboard cuenta **solo matrículas únicas**, igual que el panel
+de HubSpot ([RST] Panel de anuncios). `venta_no_es_matricula()` descarta, en
+`fetch_negocios_cerrados` y `fetch_ganados_por_programa` (capa de datos):
+
+- **pedidos duplicados** por la integración (mismo `order_number`);
+- **ventas a 0 €**;
+- **productos que no son un curso** (`es_no_curso()`): extras de alumni
+  (`ALU26*`, `ASM26*`: ceremonia de graduación, family access, premium
+  experience), **extensión de acceso** (`EXT_01M/02M/03M`), tasa de **cambio de
+  convocatoria** y pedidos `[TEST]`. Si el código está vacío se decide por el
+  nombre del line item.
+
+Revisado may–oct 2026: 96 pedidos sin código de curso (29.296 €). ~10 eran
+**cursos reales con el código vacío** (Managing Director, Sports Nutrition,
+Football Scouting…) y esos **sí cuentan**. Lo demás eran extras (~21.000 €),
+extensiones (1.659 €), un cambio de convocatoria, un test y pedidos a 0 €.
+Resultado 05–27/10/2026: 448 → **417 ventas / 178.642 €**, idéntico a HubSpot.
+Constante `EXCLUIR_NO_MATRICULAS = True` para desactivarlo.
+
+En "Otros" quedan ya solo productos de curso reales que no siguen la
+nomenclatura `pgm` (Barça Coach Academy, Coaches Academy, Business Intelligence
+in Sports…).
 
 ## Otras notas
 - **Batches de HubSpot: máximo 100 inputs** por llamada (400 con más).

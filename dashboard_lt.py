@@ -1257,6 +1257,53 @@ def _fuera_del_corte(pipeline_id: str, fecha_cierre: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SOLO MATRÍCULAS ÚNICAS (decisión oct-2026, igual que el panel de HubSpot)
+# ══════════════════════════════════════════════════════════════════════════════
+# Por WooCommerce también se venden cosas que NO son una matrícula: extras de
+# alumni (ceremonia de graduación, family access, premium experience), la
+# extensión de acceso a un curso (EXT_01M/02M/03M) o la tasa de cambio de
+# convocatoria. Además la integración duplica algunos pedidos (mismo
+# order_number dos veces) y hay pedidos completados a 0 €. Nada de eso cuenta.
+# Revisado may-oct 2026: 96 pedidos sin código de curso; ~10 eran cursos reales
+# con el código vacío (Managing Director, Sports Nutrition…) y esos SÍ cuentan.
+EXCLUIR_NO_MATRICULAS = True
+NO_CURSO_PREFIJOS = ("EXT_", "ALU", "ASM")
+NO_CURSO_TEXTOS = ("access extension", "graduation ceremony", "family access",
+                   "premium experience", "intake change", "cambio de convocatoria",
+                   "[test]")
+
+
+def es_no_curso(cod, *textos) -> bool:
+    """Producto vendido que no es una matrícula (extra, extensión, tasa…)."""
+    if (cod or "").strip().upper().startswith(NO_CURSO_PREFIJOS):
+        return True
+    t = " ".join(x for x in textos if isinstance(x, str)).lower()
+    return any(k in t for k in NO_CURSO_TEXTOS)
+
+
+def venta_no_es_matricula(p: dict, cod: str, etapa: str, vistos: set) -> bool:
+    """
+    True si el negocio no debe contarse: venta a 0 €, producto que no es un
+    curso o pedido duplicado por la integración (mismo order_number). `vistos`
+    acumula los pedidos ya contados en la carga.
+    """
+    if not EXCLUIR_NO_MATRICULAS:
+        return False
+    if etapa == "Cierre ganado":
+        if _num_seguro(p.get("amount")) <= 0:
+            return True
+        if es_no_curso(p.get("codigo_del_producto") or cod,
+                       p.get("dealname"), p.get("curso")):
+            return True
+    num = (p.get("order_number") or "").strip()
+    if num:
+        if (etapa, num) in vistos:
+            return True
+        vistos.add((etapa, num))
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ATRIBUCIÓN ([RT - DA]) — calculada en HubSpot, aquí solo se lee
 # ══════════════════════════════════════════════════════════════════════════════
 # Cada pedido de WooCommerce trae, desde el 05/10/2026, el reparto multicontacto
@@ -1409,6 +1456,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
 
     # 1. Recoger los deals cerrados del período con sus propiedades base
     deal_map = {}   # deal_id → {etapa, motivos, fecha_cierre}
+    _pedidos_vistos = set()   # para no contar dos veces un pedido duplicado
     for pipeline_id, stage_id, etapa, motivo in _pipeline_stages(fi_date, ff_date):
         after = None
         while True:
@@ -1426,7 +1474,7 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                                "codigo_del_producto",
                                # Descuento aplicado, para saber qué beca usó
                                # de verdad y no suponerlo por la fecha.
-                               "discount_amount"] + PROPS_ATRIBUCION_DEAL,
+                               "discount_amount", "order_number"] + PROPS_ATRIBUCION_DEAL,
                 "limit": 100,
             }
             if after:
@@ -1446,6 +1494,8 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
                 _cod = codigo_producto(p.get("codigo_del_producto"), p.get("dealname"))
                 if EXCLUIR_HIGH_TICKET and es_high_ticket(
                         _cod, p.get("dealname"), p.get("curso")):
+                    continue
+                if venta_no_es_matricula(p, _cod, etapa, _pedidos_vistos):
                     continue
                 try:
                     _imp = float(p.get("amount") or 0)
@@ -1475,6 +1525,18 @@ def fetch_negocios_cerrados(fecha_inicio: str = "todos",
             if not pg or "next" not in pg:
                 break
             after = pg["next"]["after"]
+
+    # Ventas sin código de curso: el nombre del line item dice si es un curso
+    # con el código vacío (cuenta) o un extra que no es matrícula (fuera).
+    if EXCLUIR_NO_MATRICULAS:
+        _otros = tuple(sorted(d for d, i in deal_map.items()
+                              if i["etapa"] == "Cierre ganado"
+                              and i["tipo_curso"] == "Otros"))
+        if _otros:
+            _li = fetch_nombres_producto(_otros)
+            for did in _otros:
+                if es_no_curso("", (_li.get(did) or {}).get("nombre", "")):
+                    deal_map.pop(did, None)
 
     if not deal_map:
         return pd.DataFrame()
@@ -1611,6 +1673,7 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
 
     _ganados = [(p, s, e, m) for p, s, e, m in _pipeline_stages(fi_date, ff_date)
                 if e == "Cierre ganado"]
+    _pedidos_vistos = set()   # para no contar dos veces un pedido duplicado
 
     for pipeline_id, stage_id, _etapa, _motivo in _ganados:
         after = None
@@ -1626,7 +1689,8 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
             payload = {
                 "filterGroups": [{"filters": filters}],
                 "properties": ["dealname", "closedate", "curso", "nombre_programa",
-                               "id_curso", "codigo_del_producto"],
+                               "id_curso", "codigo_del_producto",
+                               "amount", "order_number"],
                 "limit": 100,
             }
             if after:
@@ -1644,6 +1708,8 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
                 if EXCLUIR_HIGH_TICKET and es_high_ticket(
                         _cod, p.get("dealname"), p.get("curso")):
                     continue
+                if venta_no_es_matricula(p, _cod, "Cierre ganado", _pedidos_vistos):
+                    continue
                 deal_map[d["id"]] = {
                     "fecha_cierre":    fecha_c,
                     "mes":             fecha_c[:7] if fecha_c else "",
@@ -1659,6 +1725,16 @@ def fetch_ganados_por_programa(fecha_inicio: str, fecha_fin: str) -> pd.DataFram
             if not pg or "next" not in pg:
                 break
             after = pg["next"]["after"]
+
+    # Igual que en fetch_negocios_cerrados: fuera los extras sin código de curso
+    if EXCLUIR_NO_MATRICULAS:
+        _sin_cod = tuple(sorted(d for d, i in deal_map.items()
+                                if tipo_producto(i["deal_codigo"]) == "Otros"))
+        if _sin_cod:
+            _li = fetch_nombres_producto(_sin_cod)
+            for did in _sin_cod:
+                if es_no_curso("", (_li.get(did) or {}).get("nombre", "")):
+                    deal_map.pop(did, None)
 
     if not deal_map:
         return pd.DataFrame()
@@ -3590,10 +3666,50 @@ def _render_atribucion(dv, fi, ff, modelo, secciones):
             t["Grupo"] = t["HT"].map({True: "High Ticket", False: "Low Ticket"})
             t["CPA"] = (t["Inversion"] / t["Ventas"]).where(t["Ventas"] > 0)
             t["ROAS"] = (t["Ingresos"] / t["Inversion"]).where(t["Inversion"] > 0)
+            # Cómo llegó el nombre de la campaña: si el anuncio no lleva
+            # utm_campaign con el nombre, HubSpot solo recibe el ID numérico.
+            _trad = set(CAMPANAS_META_ID.values())
+
+            def _origen_nombre(n):
+                n = str(n or "")
+                if n.strip().isdigit():
+                    return "⚠️ Solo ID (sin traducir)"
+                if n in _trad:
+                    return "ID traducido"
+                return "Nombre (UTM)"
+            t["Nombre"] = t["Campaña"].map(_origen_nombre)
             t = t.sort_values(["Inversion", "Ventas"], ascending=False)
+
+            _sin = t[t["Nombre"].str.startswith("⚠️")]
+            _tr = t[t["Nombre"] == "ID traducido"]
+            if not _sin.empty:
+                st.error(
+                    f"🔴 **{len(_sin)} campaña(s) llegan solo con el ID** y no están en "
+                    f"la tabla de traducción: " + ", ".join(f"`{x}`" for x in _sin["Campaña"])
+                    + ". Sus anuncios no llevan `utm_campaign` con el nombre. Hay que "
+                    "corregir los parámetros de URL en Meta y añadir el ID a "
+                    "`CAMPANAS_META_ID` en el código.")
+            if not _tr.empty:
+                st.warning(
+                    f"🟡 **{len(_tr)} campaña(s) llegan con el ID** y se muestran con el "
+                    f"nombre gracias a la tabla de traducción. Conviene corregir sus "
+                    f"parámetros de URL en Meta para que lleguen con el nombre.")
+
+            def _color_fila(r):
+                if r["Nombre"].startswith("⚠️"):
+                    c = "background-color: #fde2e2"     # rojo: ID sin traducir
+                elif r["Nombre"] == "ID traducido":
+                    c = "background-color: #fff4cc"     # amarillo: ID traducido
+                else:
+                    c = ""
+                return [c] * len(r)
+
+            _show_c = (t[["Campaña", "Nombre", "red", "Grupo", "Inversion", "Ventas",
+                          "Ingresos", "CPA", "ROAS"]]
+                       .rename(columns={"red": "Red", "Inversion": "Inversión"}))
             st.dataframe(
-                t[["Campaña", "red", "Grupo", "Inversion", "Ventas", "Ingresos", "CPA", "ROAS"]]
-                .rename(columns={"red": "Red", "Inversion": "Inversión"}).style
+                _show_c.style
+                .apply(_color_fila, axis=1)
                 .background_gradient(subset=["Ventas"], cmap="Blues")
                 .background_gradient(subset=["Inversión"], cmap="YlOrBr")
                 .format({"Inversión": "{:,.0f} €", "Ventas": "{:,.1f}",
@@ -3601,7 +3717,12 @@ def _render_atribucion(dv, fi, ff, modelo, secciones):
                          "ROAS": "{:.2f}"}, na_rep="–"),
                 use_container_width=True, hide_index=True,
                 height=min(620, len(t) * 36 + 40),
-                column_config={"Campaña": st.column_config.TextColumn(width="large")})
+                column_config={"Campaña": st.column_config.TextColumn(width="large"),
+                               "Nombre": st.column_config.TextColumn(
+                                   "Cómo llega el nombre", width="medium")})
+            st.caption("🟡 Fila amarilla = la campaña llega con el ID y se ha traducido "
+                       "con la tabla. 🔴 Fila roja = llega solo con el ID y no se sabe "
+                       "su nombre. Sin color = llega con el nombre en `utm_campaign`.")
             st.caption("Campañas de Meta y Google con inversión o ventas en el rango. "
                        "Las de **High Ticket** no tienen inversión aquí (no son de Low "
                        "Ticket), pero aparecen porque traen compradores de cursos."
