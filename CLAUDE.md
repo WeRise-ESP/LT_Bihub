@@ -44,6 +44,26 @@ pídelo por el gestor de contraseñas del equipo).
   Negocio abierto → Negocio ganado. **No tiene estados de descarte**, así que la
   clasificación "Válido / No válido" de High Ticket NO aplica.
 
+## Páginas (4, como el de High Ticket + becas)
+Desde oct-2026 el dashboard tiene **4 páginas**: 📊 Dashboard general,
+🎓 Conversión por Programa, 🧲 Análisis de Leads y 🎁 Semanal y Becas. Las
+antiguas páginas de *Ventas y Facturación* y *Contactos y Canales* ya no existen
+como tales: sus funciones (`_render_ventas_page`, `_render_contactos_page`) se
+llaman desde las otras con `secciones=` para pintar solo una parte:
+
+| Página | Qué pinta de las antiguas |
+|---|---|
+| General | ventas `{"kpis","tipo"}` (facturación y reparto por tipo de curso) |
+| Conversión | ventas `{"ranking","detalle"}` + contactos `{"ranking"}` |
+| Análisis de Leads | pestañas con contactos `{"canal"}`, `{"landings"}` y ventas `{"campana"}` |
+
+Los cruces de 3-4 dimensiones (`"cruces"`) y los bloques `"resumen"`/`"tipo"`
+de contactos no se llaman desde ninguna página (se sustituyen por los filtros
+laterales), pero el código sigue ahí por si se quieren recuperar.
+
+La página de becas compara el €/día de cada beca con los **días del período
+sin ninguna beca** de `BECAS` (referencia "sin beca").
+
 ## ⚠️ "Activado" NO sale de `lt_lead_status`
 Es el error intuitivo y ya se cometió una vez. `clasif_activado()` mira señales
 reales de interés del lead:
@@ -183,7 +203,7 @@ historia: checkout 64,7 %, chatbot 47,8 %, formulario web 46,4 %, Lead Ads
 
 ## 🚫 Canales excluidos
 `CANALES_EXCLUIDOS = {"Test", "Formulario web High Ticket"}`, filtrados en
-`fetch_data` (capa de datos, no en las páginas) para que las cinco vistas
+`fetch_data` (capa de datos, no en las páginas) para que todas las páginas
 cuenten lo mismo:
 
 - **Test**: formularios de prueba del equipo (`TEST_*`), no son leads.
@@ -284,7 +304,7 @@ Cobertura en junio de 2026: **121 códigos** en el mapa, 92 de Low Ticket, que
 nombran el **100 %** de los códigos del ranking. Cuesta ~30 s la primera vez
 (47 páginas de contactos + 10 de productos), por eso la caché es de **2 horas**.
 
-Lo usan el ranking de captación (página de Contactos) y `_prog_label` de la
+Lo usan el ranking de captación (página de Conversión) y `_prog_label` de la
 página de Conversión. Si un código sale con "—", no está ni en el catálogo ni
 en ningún evento de conversión.
 
