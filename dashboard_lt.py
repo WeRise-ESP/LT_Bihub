@@ -730,6 +730,8 @@ _PATRONES_CANAL = [
     (re.compile(r"helpdesk", re.I),                        "Helpdesk"),
     (re.compile(r"^\s*test[_\s-]", re.I),                  "Test"),
     (re.compile(r"lead\s*ads|leadads|fb/ig", re.I),        "Facebook Lead Ads"),
+    # Formularios genéricos de las campañas LT de Lead Ads: FORM_Generico_LATAM_ES_…
+    (re.compile(r"^form_generico", re.I),                  "Facebook Lead Ads"),
     # Formularios de campaña: Form_P_0023_ES_05/26, FormLargo_CE_0044_EN_07/26
     (re.compile(r"^form(largo)?_(?:CE|EP|PG|P|C|M)_\d+", re.I), "Facebook Lead Ads"),
     (re.compile(r"landing", re.I),                         "Landing"),
@@ -916,6 +918,41 @@ def _fecha_cuenta(iso: str) -> str:
         return iso[:10]
 
 
+# Formularios con los que WooCommerce crea el contacto al comprar.
+FORMS_COMPRA = ("Checkout Form", "WooCommerce by MakeWebBetter")
+# Tipo de los leads de formularios genéricos de Lead Ads (sin curso concreto).
+TIPO_GENERICO = "Genérico (Lead Ads)"
+
+
+def _matricula_lt_de_contactos(contact_ids: list) -> dict:
+    """
+    {contact_id: código del curso} de los contactos que tienen un pedido de
+    WooCommerce completado de un curso Low Ticket (CE_ / P_ / C_).
+    """
+    if not contact_ids:
+        return {}
+    c2d: dict = {}
+    for i in range(0, len(contact_ids), 100):
+        data = hs_post(f"{BASE}/crm/v4/associations/contacts/deals/batch/read",
+                       {"inputs": [{"id": c} for c in contact_ids[i:i + 100]]})
+        for it in data.get("results", []):
+            c2d[str(it["from"]["id"])] = [str(t["toObjectId"]) for t in it.get("to", [])]
+    deal_ids = list({d for ds in c2d.values() for d in ds})
+    cod_deal: dict = {}
+    for i in range(0, len(deal_ids), 100):
+        data = hs_post(f"{BASE}/crm/v3/objects/deals/batch/read",
+                       {"inputs": [{"id": d} for d in deal_ids[i:i + 100]],
+                        "properties": ["pipeline", "dealstage", "codigo_del_producto"]})
+        for it in data.get("results", []):
+            p = it["properties"]
+            cod = (p.get("codigo_del_producto") or "").strip().upper()
+            if (p.get("pipeline") == PIPELINE_WOO and p.get("dealstage") in WOO_GANADO
+                    and cod.startswith(PGM_PREFIXES)):
+                cod_deal[it["id"]] = cod
+    return {c: next(cod_deal[d] for d in ds if d in cod_deal)
+            for c, ds in c2d.items() if any(d in cod_deal for d in ds)}
+
+
 def _pgm_month_windows(fi_date: str, ff_date: str, days: int = 10):
     """
     Ventanas de `days` días [ini_ms, fin_ms] que cubren [fi_date, ff_date].
@@ -949,8 +986,15 @@ def _pgm_month_windows(fi_date: str, ff_date: str, days: int = 10):
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
     """
-    Contactos cuya propiedad `pgm` empieza por P_ / CE_ / C_ y cuyo
-    createdate cae en el período seleccionado. Una fila por contacto.
+    Contactos nuevos Low Ticket cuyo createdate cae en el período. Una fila por
+    contacto. Mismo criterio que el panel de HubSpot ([RST] Panel de anuncios):
+
+      1. `pgm` que empieza por P_ / CE_ / C_;
+      2. leads de los formularios genéricos de Lead Ads (`FORM_Generico_*`):
+         campañas LT cuyo `pgm` trae un área de interés, no un código;
+      3. compradores creados al comprar (checkout de WooCommerce) que tienen
+         una matrícula LT ganada, aunque no tengan `pgm`. Su `pgm` pasa a ser
+         el código del producto comprado.
     """
     fi_date = fecha_inicio if fecha_inicio != "todos" else MIN_DATE
     ff_date = (fecha_fin if fecha_fin != "todos"
@@ -968,6 +1012,11 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             {"filters": [{"propertyName": "pgm", "operator": "CONTAINS_TOKEN",
                           "value": f"{pfx}*"}] + base}
             for pfx in PGM_PREFIXES
+        ] + [
+            {"filters": [{"propertyName": "hs_object_source_detail_1", "operator": "CONTAINS_TOKEN",
+                          "value": "Form_Generico*"}] + base},
+            {"filters": [{"propertyName": "hs_object_source_detail_1", "operator": "IN",
+                          "values": list(FORMS_COMPRA)}] + base},
         ]
         after = None
         while True:
@@ -984,9 +1033,17 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             data = hs_post(f"{BASE}/crm/v3/objects/contacts/search", payload)
             for c in data.get("results", []):
                 cp = c["properties"]
-                # Verificación EXACTA del prefijo (CONTAINS_TOKEN tokeniza por '_')
-                if not (cp.get("pgm") or "").strip().upper().startswith(PGM_PREFIXES):
+                # Verificación EXACTA (CONTAINS_TOKEN tokeniza por '_')
+                form = (cp.get("hs_object_source_detail_1") or "").strip()
+                if (cp.get("pgm") or "").strip().upper().startswith(PGM_PREFIXES):
+                    cp["_tipo_alta"] = "pgm"
+                elif form.lower().startswith("form_generico"):
+                    cp["_tipo_alta"] = "generico"
+                elif form in FORMS_COMPRA:
+                    cp["_tipo_alta"] = "compra"   # se confirma abajo
+                else:
                     continue
+                cp["_id"] = c["id"]
                 key = (cp.get("email") or "").lower().strip() or c["id"]
                 out.setdefault(key, cp)
             pg = data.get("paging", {})
@@ -1002,6 +1059,16 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
         for f in futs:
             for k, v in f.result().items():
                 seen.setdefault(k, v)
+
+    # Los creados en el checkout solo cuentan si compraron Low Ticket (fuera
+    # High Ticket, extras y carritos que no llegaron a pagarse).
+    compras = _matricula_lt_de_contactos(
+        [v["_id"] for v in seen.values() if v["_tipo_alta"] == "compra"])
+    for k in [k for k, v in seen.items() if v["_tipo_alta"] == "compra"]:
+        if seen[k]["_id"] in compras:
+            seen[k]["pgm"] = compras[seen[k]["_id"]]
+        else:
+            del seen[k]
 
     # Vacío legítimo (sin contactos en el período): DataFrame CON columnas
     # para que las secciones que hacen df["..."] no lancen KeyError.
@@ -1019,6 +1086,12 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
         fecha_str = _fecha_cuenta(cp.get("createdate"))
         _pais = resolve_pais(cp)
         pgm_val = (cp.get("pgm") or "").strip()
+        _programa = (cp.get("mail_programa_interes") or "").strip()
+        if cp["_tipo_alta"] == "generico":
+            # En los formularios genéricos `pgm` es el área de interés
+            # ("medicina deportiva"), no un código de curso.
+            _programa = _programa or pgm_val.capitalize()
+            pgm_val = ""
         _estado = resolve_lead_status(cp)
         _o_d1 = (cp.get("hs_analytics_source_data_1") or "").strip()
         _o_d2 = (cp.get("hs_analytics_source_data_2") or "").strip()
@@ -1029,7 +1102,8 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "fecha":            fecha_str,
             "mes":              fecha_str[:7],
             "pgm":              pgm_val,
-            "tipo_programa":    tipo_programa(pgm_val),
+            "tipo_programa":    (TIPO_GENERICO if cp["_tipo_alta"] == "generico"
+                                 else tipo_programa(pgm_val)),
             "pais":             _pais,
             "lead_status":      _estado,
             "lead_activado":    clasif_activado(cp),
@@ -1040,7 +1114,7 @@ def fetch_data(fecha_inicio: str, fecha_fin: str) -> pd.DataFrame:
             "curso":            (cp.get("curso") or "").strip(),
             "fuente":           fuente,
             "origen_fuente":    origen,
-            "programa":         (cp.get("mail_programa_interes") or "Sin programa").strip() or "Sin programa",
+            "programa":         _programa or "Sin programa",
             "mercado":          resolve_mercado(_pais),
             # ── Origen / campaña ──────────────────────────────────────────────
             "fuente_original":  label_fuente(cp.get("hs_analytics_source")),
@@ -2489,7 +2563,7 @@ def main():
                     Dashboard Low Ticket — {ACCOUNT_NAME}
                 </h1>
                 <p style="color:{BARCA['line']};margin:5px 0 0;font-size:14px">
-                    Embudo y conversión de leads · Contactos por programa (pgm: P_/CE_/C_) · HubSpot CRM
+                    Embudo y conversión de leads · Contactos LT (pgm P_/CE_/C_, Lead Ads genéricos y compradores) · HubSpot CRM
                 </p>
             </div>
         </div>
@@ -2557,7 +2631,7 @@ def main():
             options=list(FUENTES_ES.values()) + [FUENTE_SIN_ASIGNAR],
         )
         filtro_tipo = st.multiselect("Tipo de programa",
-                                     options=list(TIPO_PROGRAMA.values()))
+                                     options=list(TIPO_PROGRAMA.values()) + [TIPO_GENERICO])
         filtro_valido = st.multiselect("Actividad del lead",
                                        options=["Activado", "Sin actividad"])
 
@@ -2815,7 +2889,7 @@ def main():
 
     # ── Por tipo de programa ─────────────────────────────────────────────────────
     st.markdown("### Distribución por tipo de programa")
-    _TIPO_ORDEN = list(TIPO_PROGRAMA.values()) + ["Otro"]
+    _TIPO_ORDEN = list(TIPO_PROGRAMA.values()) + [TIPO_GENERICO, "Otro"]
     col1, col2 = st.columns(2)
     with col1:
         tipo_counts = df["tipo_programa"].value_counts().reset_index()
@@ -4215,11 +4289,11 @@ def _render_contactos_page(dc, periodo_txt, fi, ff, secciones=None):
         "Otro formulario":             BARCA["ink40"],
         "Sin identificar":             BARCA["line2"],
     }
-    _ORDEN_TIPO = list(TIPO_PROGRAMA.values()) + ["Otro"]
+    _ORDEN_TIPO = list(TIPO_PROGRAMA.values()) + [TIPO_GENERICO, "Otro"]
     _tipos_pres = [t for t in _ORDEN_TIPO if t in set(dc["tipo_programa"])]
     _COLOR_TIPO = {
         "Certificado": BARCA["blue"], "Diploma": BARCA["gold"],
-        "Curso": BARCA["yellow"], "Otro": BARCA["ink40"],
+        "Curso": BARCA["yellow"], TIPO_GENERICO: BARCA["ink60"], "Otro": BARCA["ink40"],
     }
 
     # ══════════════════════════════════════════════════════════════════════════

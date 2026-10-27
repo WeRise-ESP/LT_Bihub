@@ -25,7 +25,21 @@ Necesitas `.streamlit/secrets.toml` con el token de HubSpot (NO está en git —
 pídelo por el gestor de contraseñas del equipo).
 
 ## Reglas de negocio
-- Los contactos se filtran por la propiedad **`pgm`** (prefijos `P_`, `CE_`, `C_`).
+- **Qué es un contacto LT** (desde oct-2026, mismo criterio que el panel de
+  HubSpot «[RST] Panel de anuncios», campo `rt__da_cd_contactos_mt`):
+  1. `pgm` con prefijo `P_`, `CE_`, `C_`;
+  2. leads de los formularios genéricos de Lead Ads (`FORM_Generico_*`), que son
+     campañas LT (`fcb_bihub_lowticket_leadads_*`) pero traen en `pgm` un área
+     de interés ("medicina deportiva"), no un código. Tipo `TIPO_GENERICO`,
+     `pgm` vacío y el área en `programa`. ~1.800 del 05 al 26/10/2026;
+  3. compradores creados al comprar (`FORMS_COMPRA`: *Checkout Form*,
+     *WooCommerce by MakeWebBetter*) con un pedido Woo completado de un curso LT
+     (`_matricula_lt_de_contactos`); su `pgm` pasa a ser el código comprado.
+     Antes no contaban: ~78 % de las compras directas no tenía `pgm`.
+
+  Del 05 al 26/10/2026: dashboard 3.275 vs panel 2.938. La diferencia (~330)
+  son leads LT sin ninguna visita externa (tráfico directo): el panel solo pone
+  en "sin visita" a compradores, así que esos leads no aparecen en él.
   Los prefijos de High Ticket (`EP_`, `PG_`, `M_`) NO entran aquí como leads,
   pero sí aparecen en algunos pedidos de WooCommerce (ver más abajo).
 - **Qué es cada prefijo** (verificado contra los nombres reales de los productos
