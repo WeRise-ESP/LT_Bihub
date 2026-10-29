@@ -1200,6 +1200,8 @@ BECAS = [
     {"nombre": "Celebrate the most awaited game", "desc": 50, "desde": "2026-10-19", "hasta": "2026-10-25"},
     {"nombre": "Time is running out (26-29/10)", "desc": 50, "desde": "2026-10-26", "hasta": "2026-10-29"},
     {"nombre": "Only a few hours left!", "desc": 40, "desde": "2026-10-30", "hasta": "2026-11-01"},
+    {"nombre": "The world's best, Blaugrana", "desc": 50, "desde": "2026-11-02", "hasta": "2026-11-05"},
+    {"nombre": "Time is running out (06-08/11)", "desc": 40, "desde": "2026-11-06", "hasta": "2026-11-08"},
 ]
 
 
