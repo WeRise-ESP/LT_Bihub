@@ -1202,6 +1202,8 @@ BECAS = [
     {"nombre": "Only a few hours left!", "desc": 40, "desde": "2026-10-30", "hasta": "2026-11-01"},
     {"nombre": "The world's best, Blaugrana", "desc": 50, "desde": "2026-11-02", "hasta": "2026-11-05"},
     {"nombre": "Time is running out (06-08/11)", "desc": 40, "desde": "2026-11-06", "hasta": "2026-11-08"},
+    {"nombre": "November: for physical and mental health", "desc": 50, "desde": "2026-11-09", "hasta": "2026-11-12"},
+    {"nombre": "Only a few hours left! (13-15/11)", "desc": 40, "desde": "2026-11-13", "hasta": "2026-11-15"},
 ]
 
 
